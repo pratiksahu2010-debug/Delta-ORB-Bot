@@ -1,0 +1,185 @@
+import logging
+import os
+import math
+from pathlib import Path
+
+from pydantic import Field
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+log = logging.getLogger(__name__)
+
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    app_env: str = "development"
+    # ALL preserves the combined deployment; MEX and ORB create isolated single-module bots.
+    bot_module: str = "ORB"
+    log_level: str = "INFO"
+    signal_only: bool = True
+    orders_enabled: bool = False
+    symbols: str = "BTCUSD,ETHUSD,SOLUSD"
+    momentum_symbols_file: str = "config/momentum_symbols.txt"
+    tpr_rb_symbols_file: str = "config/tpr_rb_symbols.txt"
+    adx_min: float = 17.0
+    mex_enabled: bool = True
+    orb_enabled: bool = True
+    orb_min_rvol: float = 1.10
+    tpr_enabled: bool = True
+    rb_enabled: bool = True
+    rb_min_rvol: float = 1.45
+    rb_range_lookback: int = 12
+    mex_min_rvol: float = 1.50
+    mex_min_atr_expansion: float = 1.15
+    mex_live_min_eval_interval_seconds: float = 0.75
+    candle_timeframe: str = "5m"
+    context_timeframe: str = "15m"
+    quote_max_age_seconds: float = 3.0
+    signal_max_age_bars: int = 2
+    max_entry_extension_atr: float = 0.8
+    trigger_confirmation_seconds: float = 0.5
+    trigger_confirmation_max_gap_seconds: float = 1.5
+    max_candle_lag_seconds: int = 600
+    candle_poll_interval_seconds: float = 30.0
+    state_db_path: str = "./data/signal_state.sqlite3"
+    database_url: str = ""
+    telegram_bot_token: str = ""
+    telegram_chat_id: str = ""
+    telegram_test_key: str = ""
+    journal_admin_key: str = ""
+    telegram_webhook_secret: str = ""
+    telegram_allowed_user_ids: str = ""
+    # Outcome-only measurement settings; these never change live signal targets.
+    outcome_horizon_bars: int = Field(default=12, ge=1, le=288)
+    outcome_tp2_r_multiple: float = Field(default=2.0, gt=1.5, le=10.0)
+    # Round-trip percentage-point costs. Configure these from the account fee tier.
+    outcome_fee_pct: float = Field(default=0.0, ge=0.0, le=5.0)
+    outcome_slippage_pct: float = Field(default=0.0, ge=0.0, le=5.0)
+    delta_base_url: str = "https://api.india.delta.exchange"
+
+    @staticmethod
+    def _read_symbols(path: str, expected_count: int | None = None) -> list[str]:
+        file_path = Path(path)
+        if not file_path.is_file():
+            raise ValueError(f"Configured symbol universe file does not exist: {path}")
+        values = []
+        seen = set()
+        for line in file_path.read_text(encoding="utf-8").splitlines():
+            symbol = line.split("#", 1)[0].strip().upper()
+            if not symbol:
+                continue
+            if symbol in seen:
+                raise ValueError(f"Duplicate symbol {symbol} in configured universe: {path}")
+            seen.add(symbol)
+            values.append(symbol)
+        if not values:
+            raise ValueError(f"Configured symbol universe is empty: {path}")
+        if expected_count is not None and len(values) != expected_count:
+            raise ValueError(
+                f"Configured symbol universe must contain exactly {expected_count} unique symbols: "
+                f"{path} contains {len(values)}"
+            )
+        return values
+
+    @property
+    def enabled_modules(self) -> list[str]:
+        mode = str(self.bot_module or "ALL").strip().upper()
+        if mode == "ALL":
+            return ["ORB", "MEX"]
+        if mode in {"ORB", "MEX"}:
+            return [mode]
+        raise ValueError("BOT_MODULE must be ALL, ORB, or MEX")
+
+    def module_enabled(self, module: str) -> bool:
+        return str(module).strip().upper() in self.enabled_modules
+
+    def strategy_enabled(self, strategy: str) -> bool:
+        name = str(strategy).strip().upper()
+        module = "ORB" if name in {"ORB", "RB", "TPR"} else "MEX" if name == "MEX" else None
+        return module is not None and self.module_enabled(module)
+
+    @property
+    def mex_core_symbol_list(self) -> list[str]:
+        """The 60-symbol MEX seed list, expanded to the complete scanner universe below."""
+        return self._read_symbols(self.momentum_symbols_file, expected_count=60)
+
+    @property
+    def tpr_rb_symbol_list(self) -> list[str]:
+        """The 60-symbol subset eligible for the RB and TPR setup types."""
+        return self._read_symbols(self.tpr_rb_symbols_file, expected_count=60)
+
+    @property
+    def symbol_list(self) -> list[str]:
+        # One fixed 120-symbol crypto universe is shared by both top-level modules.
+        mex_core = self.mex_core_symbol_list
+        tpr_rb = self.tpr_rb_symbol_list
+        overlap = sorted(set(mex_core) & set(tpr_rb))
+        if overlap:
+            raise ValueError(f"MEX core and TPR+RB symbol lists overlap: {overlap}")
+        return tpr_rb + mex_core
+
+    @property
+    def momentum_symbol_list(self) -> list[str]:
+        # MEX evaluates all 120 configured symbols, not only its 60-symbol seed list.
+        return self.symbol_list
+
+    @property
+    def telegram_feedback_user_ids(self) -> list[str]:
+        """Return the explicit feedback allowlist, or the private-chat owner ID.
+
+        Group chats fail closed unless TELEGRAM_ALLOWED_USER_IDS is configured.
+        """
+        configured = list(dict.fromkeys(
+            value.strip() for value in self.telegram_allowed_user_ids.split(",")
+            if value.strip()
+        ))
+        if configured:
+            return configured
+        chat_id = str(self.telegram_chat_id or "").strip()
+        if chat_id.isdigit() and int(chat_id) > 0:
+            return [chat_id]
+        return []
+
+    @property
+    def uses_default_state_db_path(self) -> bool:
+        return Path(self.state_db_path) == Path("./data/signal_state.sqlite3")
+
+    @property
+    def database_backend(self) -> str:
+        return "postgresql" if self.database_url.strip() else "sqlite"
+
+    @property
+    def is_production(self) -> bool:
+        return self.app_env.lower() in {"production", "prod"} or bool(os.getenv("RENDER_SERVICE_ID"))
+
+    def validate_safety(self) -> None:
+        _ = self.enabled_modules  # validates BOT_MODULE before the engine starts
+        if not self.signal_only or self.orders_enabled:
+            raise ValueError("Unsafe configuration: signal-only must be true and order execution must be disabled")
+        float_thresholds = (
+            self.adx_min, self.orb_min_rvol,
+            self.rb_min_rvol, self.mex_min_rvol, self.mex_min_atr_expansion,
+            self.mex_live_min_eval_interval_seconds, self.quote_max_age_seconds,
+            self.max_entry_extension_atr, self.trigger_confirmation_seconds,
+            self.trigger_confirmation_max_gap_seconds, self.candle_poll_interval_seconds,
+        )
+        if (not all(math.isfinite(value) for value in float_thresholds)
+                or self.adx_min < 0 or self.orb_min_rvol <= 0
+                or self.rb_min_rvol <= 0 or self.rb_range_lookback < 8
+                or self.mex_min_rvol <= 0 or self.mex_min_atr_expansion <= 0
+                or self.mex_live_min_eval_interval_seconds < 0
+                or self.quote_max_age_seconds <= 0 or self.max_entry_extension_atr <= 0
+                or self.signal_max_age_bars < 1
+                or self.max_candle_lag_seconds < 1 or self.candle_poll_interval_seconds <= 0
+                or self.trigger_confirmation_seconds < 0
+                or self.trigger_confirmation_max_gap_seconds <= 0
+                or self.trigger_confirmation_max_gap_seconds < self.trigger_confirmation_seconds):
+            raise ValueError("Invalid strategy thresholds")
+        if self.is_production:
+            database_url = self.database_url.strip().lower()
+            if not database_url:
+                raise ValueError("DATABASE_URL is required in production; refusing ephemeral SQLite state storage")
+            if not database_url.startswith(("postgres://", "postgresql://")):
+                raise ValueError("Production DATABASE_URL must point to PostgreSQL/Neon; SQLite is not permitted")
+
+
+settings = Settings()
