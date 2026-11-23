@@ -71,6 +71,12 @@ class SignalEngine:
             [], self.on_quote, self.on_stream_disconnect
         )
         self.configured_symbols = list(settings.symbol_list)
+        # Snapshot symbol universes once: Settings properties read and validate
+        # symbol files, so they must not run inside quote, scan, or health paths.
+        self.configured_symbol_set = frozenset(self.configured_symbols)
+        self.tpr_rb_symbols = frozenset(
+            getattr(settings, "tpr_rb_symbol_list", self.configured_symbols)
+        )
         self.active_symbols: list[str] = []
         self.unavailable_symbols: list[str] = list(self.configured_symbols)
         self.symbol_validation = {"status": "pending", "last_attempt_at": None, "last_error": None}
@@ -190,7 +196,7 @@ class SignalEngine:
         except Exception as exc:
             self.active_symbols = []
             self.unavailable_symbols = list(self.configured_symbols)
-            self.stream.symbols = []
+            self.stream.set_symbols([])
             self.symbol_validation.update(
                 status="error", last_error=f"{type(exc).__name__}: {str(exc)[:200]}"
             )
@@ -201,7 +207,7 @@ class SignalEngine:
         self.unavailable_symbols = [
             symbol for symbol in self.configured_symbols if symbol not in live_symbols
         ]
-        self.stream.symbols = list(self.active_symbols)
+        self.stream.set_symbols(self.active_symbols)
         self.symbol_validation.update(
             status="ok" if not self.unavailable_symbols else "partial",
             last_error=None,
@@ -318,7 +324,7 @@ class SignalEngine:
                 # should still use its own database, but this avoids cross-module deletion.
                 if not self._strategy_enabled(strategy):
                     continue
-                if symbol not in self.settings.symbol_list:
+                if symbol not in self.configured_symbol_set:
                     raise ValueError("symbol_not_configured")
                 candle_time = datetime.fromisoformat(payload["candle_time"]).astimezone(timezone.utc)
                 expires_at = datetime.fromisoformat(payload["expires_at"]).astimezone(timezone.utc)
@@ -1037,7 +1043,7 @@ class SignalEngine:
                 "low": b.low, "close": b.close, "volume": b.volume,
             } for b in bars])
             momentum_specs = []
-            if self._module_enabled("ORB") and symbol in getattr(self.settings, "tpr_rb_symbol_list", ()):
+            if self._module_enabled("ORB") and symbol in self.tpr_rb_symbols:
                 if getattr(self.settings, "tpr_enabled", True):
                     momentum_specs.append((
                         "TPR", lambda diagnostics, prepared: evaluate_tpr(
@@ -1053,7 +1059,7 @@ class SignalEngine:
                             diagnostics=diagnostics, prepared=True,
                         ),
                     ))
-            if (self._module_enabled("ORB") and symbol in self.settings.symbol_list
+            if (self._module_enabled("ORB") and symbol in self.configured_symbol_set
                     and getattr(self.settings, "orb_enabled", True)):
                 orb_sessions = getattr(self.settings, "orb_session_config", None)
                 momentum_specs.append((
@@ -1532,15 +1538,15 @@ class SignalEngine:
             "active_symbol_count": len(self.active_symbols),
             "unavailable_symbols": list(self.unavailable_symbols),
             "symbol_validation": dict(self.symbol_validation),
-            "candle_ready_count": sum(1 for symbol in self.settings.symbol_list if self.candle_diagnostics.get(symbol, {}).get("state") == "ready"),
-            "candle_warming_count": sum(1 for symbol in self.settings.symbol_list if self.candle_diagnostics.get(symbol, {}).get("state") == "warming"),
-            "candle_no_data_count": sum(1 for symbol in self.settings.symbol_list if self.candle_diagnostics.get(symbol, {}).get("state") == "no_data"),
-            "candle_error_count": sum(1 for symbol in self.settings.symbol_list if self.candle_diagnostics.get(symbol, {}).get("state") == "fetch_error" or self.candle_diagnostics.get(symbol, {}).get("last_attempt_status") == "error"),
-            "candle_warming_symbols": [symbol for symbol in self.settings.symbol_list if self.candle_diagnostics.get(symbol, {}).get("state") == "warming"],
-            "candle_no_data_symbols": [symbol for symbol in self.settings.symbol_list if self.candle_diagnostics.get(symbol, {}).get("state") == "no_data"],
-            "candle_error_symbols": [symbol for symbol in self.settings.symbol_list if self.candle_diagnostics.get(symbol, {}).get("state") == "fetch_error" or self.candle_diagnostics.get(symbol, {}).get("last_attempt_status") == "error"],
-            "candle_diagnostics": {symbol: dict(self.candle_diagnostics.get(symbol, {})) for symbol in self.settings.symbol_list},
-            "quote_missing_symbols": [symbol for symbol in self.settings.symbol_list if symbol not in self.quotes],
+            "candle_ready_count": sum(1 for symbol in self.configured_symbols if self.candle_diagnostics.get(symbol, {}).get("state") == "ready"),
+            "candle_warming_count": sum(1 for symbol in self.configured_symbols if self.candle_diagnostics.get(symbol, {}).get("state") == "warming"),
+            "candle_no_data_count": sum(1 for symbol in self.configured_symbols if self.candle_diagnostics.get(symbol, {}).get("state") == "no_data"),
+            "candle_error_count": sum(1 for symbol in self.configured_symbols if self.candle_diagnostics.get(symbol, {}).get("state") == "fetch_error" or self.candle_diagnostics.get(symbol, {}).get("last_attempt_status") == "error"),
+            "candle_warming_symbols": [symbol for symbol in self.configured_symbols if self.candle_diagnostics.get(symbol, {}).get("state") == "warming"],
+            "candle_no_data_symbols": [symbol for symbol in self.configured_symbols if self.candle_diagnostics.get(symbol, {}).get("state") == "no_data"],
+            "candle_error_symbols": [symbol for symbol in self.configured_symbols if self.candle_diagnostics.get(symbol, {}).get("state") == "fetch_error" or self.candle_diagnostics.get(symbol, {}).get("last_attempt_status") == "error"],
+            "candle_diagnostics": {symbol: dict(self.candle_diagnostics.get(symbol, {})) for symbol in self.configured_symbols},
+            "quote_missing_symbols": [symbol for symbol in self.configured_symbols if symbol not in self.quotes],
             "candle_gap_symbols": sum(
                 1 for bars in self.candles.values()
                 if len(bars) >= 2 and any(
