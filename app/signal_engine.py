@@ -1020,6 +1020,8 @@ class SignalEngine:
                     lambda diagnostics: evaluate_orb(
                         frame,
                         min_rvol=float(getattr(self.settings, "orb_min_rvol", 1.10)),
+                        enabled_sessions=tuple(self.settings.orb_session_config),
+                        sessions=self.settings.orb_session_config,
                         diagnostics=diagnostics,
                     ),
                 ))
