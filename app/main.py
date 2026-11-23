@@ -40,6 +40,18 @@ def _module_is_enabled(module: str) -> bool:
     return module.upper() in _enabled_modules()
 
 
+def _enabled_strategy_count() -> int:
+    """Count enabled strategy types, not only top-level modules."""
+    count = 0
+    if _module_is_enabled("ORB"):
+        count += sum(bool(getattr(settings, name, False)) for name in (
+            "orb_enabled", "rb_enabled", "tpr_enabled"
+        ))
+    if _module_is_enabled("MEX"):
+        count += int(bool(getattr(settings, "mex_enabled", False)))
+    return count
+
+
 def _require_journal_key(provided: str | None) -> None:
     expected = settings.journal_admin_key
     if not expected:
@@ -342,7 +354,7 @@ async def health():
         "strategy_adx_min": settings.adx_min,
         "strategies": {
             "module_count": len(_enabled_modules()),
-            "strategy_count": len(_enabled_modules()),
+            "strategy_count": _enabled_strategy_count(),
             "ORB": {
                 "enabled": _module_is_enabled("ORB") and settings.orb_enabled,
                 "symbol_count": len(settings.symbol_list),
