@@ -45,6 +45,10 @@ class Settings(BaseSettings):
     trigger_confirmation_max_gap_seconds: float = 1.5
     max_candle_lag_seconds: int = 600
     candle_poll_interval_seconds: float = 30.0
+    # Lower this on small instances to trade universe breadth for CPU headroom.
+    scanner_symbol_limit: int = Field(default=120, ge=1, le=120)
+    # Shadow ML is research-only and disabled in the lightweight production profile.
+    shadow_ml_enabled: bool = False
     state_db_path: str = "./data/signal_state.sqlite3"
     database_url: str = ""
     telegram_bot_token: str = ""
@@ -127,11 +131,11 @@ class Settings(BaseSettings):
         overlap = sorted(set(mex_core) & set(tpr_rb))
         if overlap:
             raise ValueError(f"MEX core and TPR+RB symbol lists overlap: {overlap}")
-        return tpr_rb + mex_core
+        return (tpr_rb + mex_core)[: self.scanner_symbol_limit]
 
     @property
     def momentum_symbol_list(self) -> list[str]:
-        # MEX evaluates all 120 configured symbols, not only its 60-symbol seed list.
+        # MEX uses the same bounded scanner universe as the active deployment.
         return self.symbol_list
 
     @property
