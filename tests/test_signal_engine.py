@@ -1257,3 +1257,59 @@ def test_structural_risk_cap_log_exposes_entry_stop_and_risk_atr(tmp_path, caplo
         assert "max_risk_atr=3.0" in caplog.text
         await engine.rest.close()
     asyncio.run(run())
+
+
+
+def test_rest_snapshots_never_start_or_advance_breakout_confirmation(tmp_path):
+    async def run():
+        engine, notifier = make_engine(tmp_path)
+        now = datetime.now(timezone.utc)
+        setup = make_setup("LONG", now)
+        engine.pending["BTCUSD"] = setup
+
+        # Repeated REST snapshots may refresh the cached quote, but each poll
+        # receives a new local timestamp and must not count as a new market event.
+        for seconds in (0.0, 0.6, 1.2):
+            received = now + timedelta(seconds=seconds)
+            quote = Quote(
+                price=101.2, bid=101.1, ask=101.2,
+                received_at=received, source="rest",
+            )
+            await engine.on_quote("BTCUSD", quote, received)
+
+        assert notifier.alerts == []
+        assert setup.trigger_candidate_at is None
+        assert setup.trigger_candidate_last_at is None
+
+        # A genuine exchange-published update can start the confirmation window.
+        await engine.on_quote(
+            "BTCUSD",
+            Quote(price=101.2, bid=101.1, ask=101.2, received_at=now),
+            now,
+        )
+        assert setup.trigger_candidate_at == now
+
+        # A REST poll after the hold interval still cannot complete it.
+        rest_time = now + timedelta(seconds=0.6)
+        await engine.on_quote(
+            "BTCUSD",
+            Quote(
+                price=101.2, bid=101.1, ask=101.2,
+                received_at=rest_time, source="rest",
+            ),
+            rest_time,
+        )
+        assert notifier.alerts == []
+        assert setup.trigger_candidate_last_at == now
+
+        # A second distinct WebSocket update completes confirmation.
+        confirmed_at = now + timedelta(seconds=0.6)
+        await engine.on_quote(
+            "BTCUSD",
+            Quote(price=101.2, bid=101.1, ask=101.2, received_at=confirmed_at),
+            confirmed_at,
+        )
+        assert len(notifier.alerts) == 1
+        await engine.rest.close()
+
+    asyncio.run(run())

@@ -579,8 +579,17 @@ class SignalEngine:
         self.quotes[symbol] = quote
         self.received_at[symbol] = received
 
+        # REST ticker polling is a snapshot fallback for display/freshness only.
+        # The same unchanged book can be returned on consecutive polls with a new
+        # local receipt time; counting those polls as independent observations can
+        # falsely satisfy the breakout hold timer. Only exchange-published WS L1
+        # updates may start or advance trigger confirmation. Fail closed during a
+        # WebSocket outage rather than manufacturing confirmation from REST polls.
+        if quote.source == "rest":
+            return
+
         # Evaluate each independent strategy's pending trigger against the
-        # same locally received update. A TPR/RB candidate does not suppress MEX.
+        # same locally received exchange update. A TPR/RB candidate does not suppress MEX.
         for strategy, setup in self._setups_for_symbol(symbol):
             await self._process_pending_quote(symbol, strategy, setup, quote, received)
 
