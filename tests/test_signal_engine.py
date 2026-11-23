@@ -421,7 +421,7 @@ def test_strategy_exception_does_not_mark_completed_candle_as_evaluated(tmp_path
             for i in range(60)
         ]
 
-        async def fake_candles(_symbol, _timeframe, _limit):
+        async def fake_candles(_symbol, _timeframe, _limit, *, since=None):
             return bars
 
         async def no_context(_symbol):
@@ -473,7 +473,7 @@ def test_refresh_ignores_regressed_rest_history_snapshot(tmp_path, monkeypatch):
         engine.candles["BTCUSD"] = cached
         engine.last_evaluated["BTCUSD"] = newest
 
-        async def fake_candles(_symbol, _timeframe, _limit):
+        async def fake_candles(_symbol, _timeframe, _limit, *, since=None):
             return regressed
 
         async def no_context(_symbol):
@@ -489,6 +489,43 @@ def test_refresh_ignores_regressed_rest_history_snapshot(tmp_path, monkeypatch):
         assert engine.candles["BTCUSD"] is cached
         assert engine.candles["BTCUSD"][-1].timestamp == newest
         assert engine.last_evaluated["BTCUSD"] == newest
+        await engine.rest.close()
+
+    asyncio.run(run())
+
+
+
+def test_incremental_candle_refresh_merges_into_full_history(tmp_path, monkeypatch):
+    from app.models import Candle
+
+    async def run():
+        engine, _notifier = make_engine(tmp_path)
+        now = datetime.now(timezone.utc).replace(second=0, microsecond=0)
+        latest_time = now - timedelta(minutes=5)
+        cached = [
+            Candle(timestamp=latest_time - timedelta(minutes=5 * (119 - i)),
+                   open=100, high=101, low=99, close=100.5, volume=10)
+            for i in range(120)
+        ]
+        engine.candles["BTCUSD"] = cached
+        engine.last_evaluated["BTCUSD"] = latest_time
+        calls = []
+        corrected = Candle(
+            timestamp=latest_time, open=100, high=101.5, low=99,
+            close=100.8, volume=12,
+        )
+
+        async def incremental(_symbol, _timeframe, _limit, *, since=None):
+            calls.append(since)
+            return [corrected]
+
+        monkeypatch.setattr(engine.rest, "candles", incremental)
+        await engine.refresh_symbol("BTCUSD")
+
+        assert calls == [int(latest_time.timestamp()) - 600]
+        assert len(engine.candles["BTCUSD"]) == 120
+        assert engine.candles["BTCUSD"][-1] == corrected
+        assert engine.last_evaluated["BTCUSD"] == latest_time
         await engine.rest.close()
 
     asyncio.run(run())
