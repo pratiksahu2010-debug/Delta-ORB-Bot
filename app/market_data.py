@@ -225,7 +225,7 @@ class DeltaRestClient:
 class DeltaPublicStream:
     """Reconnectable L1 + optional live 5m OHLCV stream."""
     def __init__(self, symbols: list[str], on_quote, on_disconnect=None, on_candle=None):
-        self.symbols = symbols
+        self.set_symbols(symbols)
         self.on_quote = on_quote
         self.on_disconnect = on_disconnect
         self.on_candle = on_candle
@@ -246,6 +246,11 @@ class DeltaPublicStream:
             "invalid": 0, "stale": 0, "zero_volume": 0, "positive_volume": 0,
         }
         self.candle_volume_samples: list[dict] = []
+
+    def set_symbols(self, symbols: list[str]) -> None:
+        """Update the subscription universe and its hot-path membership index."""
+        self.symbols = list(symbols)
+        self.symbol_set = frozenset(self.symbols)
 
     def candle_volume_diagnostics(self) -> dict:
         return {
@@ -385,7 +390,7 @@ class DeltaPublicStream:
             return
         self.candle_volume_counts["messages_seen"] += 1
         symbol = item.get("sy") or item.get("symbol")
-        if symbol not in self.symbols or str(symbol).startswith("MARK:"):
+        if symbol not in self.symbol_set or str(symbol).startswith("MARK:"):
             return
         if item.get("res") not in (None, "5m"):
             return
@@ -451,7 +456,7 @@ class DeltaPublicStream:
                     await self._handle_candle_item(item)
                     continue
                 symbol = item.get("sy") or item.get("symbol")
-                if symbol not in self.symbols:
+                if symbol not in self.symbol_set:
                     continue
                 bid, ask = item.get("bp"), item.get("ap")
                 bid_value = float(bid) if bid is not None else None
