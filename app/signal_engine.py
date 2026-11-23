@@ -1016,12 +1016,6 @@ class SignalEngine:
                 "timestamp": b.timestamp, "open": b.open, "high": b.high,
                 "low": b.low, "close": b.close, "volume": b.volume,
             } for b in bars])
-            # All enabled detectors consume the same completed-candle history.
-            # Validate it and calculate the common indicators once, rather than
-            # repeating full pandas pipelines independently for TPR, RB and ORB.
-            validated_frame = _frame(frame)
-            prepared_frame = _indicators(validated_frame) if validated_frame is not None else None
-
             momentum_specs = []
             if self._module_enabled("ORB") and symbol in getattr(self.settings, "tpr_rb_symbol_list", ()):
                 if getattr(self.settings, "tpr_enabled", True):
@@ -1057,6 +1051,13 @@ class SignalEngine:
                     ),
                 ))
 
+            # Only prepare data when at least one completed-candle detector is
+            # enabled for this symbol. All enabled detectors then share this
+            # single vectorized validation + indicator calculation.
+            prepared_frame = None
+            if momentum_specs:
+                validated_frame = _frame(frame)
+                prepared_frame = _indicators(validated_frame) if validated_frame is not None else None
 
             for strategy, evaluator in momentum_specs:
                 current_strategy = strategy
