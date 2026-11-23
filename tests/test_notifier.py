@@ -28,6 +28,9 @@ class FakeAsyncClient:
     async def __aexit__(self, *_args):
         return False
 
+    async def aclose(self):
+        return None
+
     async def post(self, *args, **kwargs):
         FakeAsyncClient.last_request = {"args": args, "kwargs": kwargs}
         return self.response

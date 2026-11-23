@@ -166,6 +166,9 @@ class SignalEngine:
         if self.shadow_ml_tasks:
             await asyncio.gather(*tuple(self.shadow_ml_tasks), return_exceptions=True)
         await self.rest.close()
+        close_notifier = getattr(self.notifier, "close", None)
+        if close_notifier is not None:
+            await close_notifier()
 
     def _on_shadow_ml_task_done(self, task: asyncio.Task) -> None:
         self.shadow_ml_tasks.discard(task)
