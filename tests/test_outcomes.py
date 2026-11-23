@@ -164,6 +164,36 @@ def test_trigger_candle_is_excluded_and_legacy_record_starts_after_setup_candle(
     assert result["final_result"] == "win"
 
 
+def test_missing_middle_candle_stops_path_and_does_not_count_later_target():
+    bars = [
+        candle("2026-11-20T10:05:00", 100, 100.5, 99.5, 100.1),
+        # 10:10 candle is missing; this later target must not be considered.
+        candle("2026-11-20T10:15:00", 100.1, 104.5, 99.8, 104.0),
+    ]
+
+    result = evaluate_market_outcome(record(), bars)
+
+    assert result["bars_observed"] == 1
+    assert result["data_gap"] is True
+    assert result["data_gap_at"] == "2026-11-20T10:10:00+00:00"
+    assert result["data_gap_seconds"] == 300
+    assert result["final_result"] == "pending"
+    assert result["complete"] is False
+    assert result["tp1_hit"] is False
+
+
+def test_missing_first_expected_candle_does_not_start_outcome_horizon():
+    bars = [candle("2026-11-20T10:10:00", 100, 104.5, 99.8, 104.0)]
+
+    result = evaluate_market_outcome(record(), bars)
+
+    assert result["bars_observed"] == 0
+    assert result["data_gap"] is True
+    assert result["data_gap_at"] == "2026-11-20T10:05:00+00:00"
+    assert result["final_result"] == "pending"
+    assert result["complete"] is False
+
+
 def test_market_outcome_rejects_invalid_prices_horizon_and_costs():
     with pytest.raises(ValueError, match="directionally valid"):
         evaluate_market_outcome({**record(), "stop_loss": 101}, [])
