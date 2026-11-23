@@ -99,8 +99,15 @@ class Settings(BaseSettings):
 
     def strategy_enabled(self, strategy: str) -> bool:
         name = str(strategy).strip().upper()
-        module = "ORB" if name in {"ORB", "RB", "TPR"} else "MEX" if name == "MEX" else None
-        return module is not None and self.module_enabled(module)
+        if name == "ORB":
+            return self.module_enabled("ORB") and self.orb_enabled
+        if name == "RB":
+            return self.module_enabled("ORB") and self.rb_enabled
+        if name == "TPR":
+            return self.module_enabled("ORB") and self.tpr_enabled
+        if name == "MEX":
+            return self.module_enabled("MEX") and self.mex_enabled
+        return False
 
     @property
     def mex_core_symbol_list(self) -> list[str]:
