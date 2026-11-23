@@ -739,6 +739,12 @@ class SignalEngine:
         key = (
             f"{symbol}:{strategy}:{setup.side}:{setup.candle_time.isoformat()}"
         )
+        # Win the durable lifecycle fence before creating a deliverable alert.
+        # A concurrent worker may have invalidated this setup after its in-memory
+        # quote check; never enqueue unless CONFIRMING -> TRIGGER_CONFIRMED succeeds.
+        if not self._transition_setup(setup, "TRIGGER_CONFIRMED", "held_breakout_confirmed"):
+            self._record_trigger_event(strategy, symbol, "trigger_confirmation_fenced")
+            return
         try:
             already_sent = key in self.sent_keys or self.store.is_sent(key)
             if not already_sent:
@@ -761,7 +767,6 @@ class SignalEngine:
         except Exception:
             log.exception("Unable to persist alert intent; failing closed symbol=%s strategy=%s", symbol, strategy)
             return
-        self._transition_setup(setup, "TRIGGER_CONFIRMED", "held_breakout_confirmed")
         self._transition_setup(setup, "ALERT_QUEUED", "telegram_outbox_enqueued")
         self._record_trigger_event(strategy, symbol, "trigger_confirmed")
         try:
