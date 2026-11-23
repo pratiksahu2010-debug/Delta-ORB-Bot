@@ -1445,3 +1445,16 @@ def test_rest_quote_fallback_polls_when_any_symbol_quote_is_stale_or_missing():
     assert _rest_quote_fallback_needed(
         ["BTCUSD", "ETHUSD"], received, now, stale_after_seconds=1.5,
     )
+
+    
+def test_rest_quote_fallback_targets_only_stale_symbols():
+    from app.signal_engine import _stale_quote_symbols
+
+    now = datetime.now(timezone.utc)
+    received = {
+        "BTCUSD": now - timedelta(seconds=0.2),
+        "ETHUSD": now - timedelta(seconds=2.0),
+    }
+    assert _stale_quote_symbols(
+        ["BTCUSD", "ETHUSD", "SOLUSD"], received, now, stale_after_seconds=1.5,
+    ) == {"ETHUSD", "SOLUSD"}
