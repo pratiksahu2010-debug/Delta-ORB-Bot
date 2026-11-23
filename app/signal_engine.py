@@ -984,9 +984,15 @@ class SignalEngine:
                 # avoiding another 120-bar payload on every polling cycle.
                 since = max(0, int(previous_bars[-1].timestamp.timestamp()) - 600)
                 updates = await self.rest.candles(symbol, "5m", 120, since=since)
-                merged = {bar.timestamp: bar for bar in previous_bars}
-                merged.update({bar.timestamp: bar for bar in updates})
-                bars = sorted(merged.values(), key=lambda bar: bar.timestamp)[-120:]
+                if updates and max(bar.timestamp for bar in updates) < previous_bars[-1].timestamp:
+                    # A truncated/regressed incremental response cannot be merged
+                    # safely. Fall back to full history before deciding readiness.
+                    self.force_full_candle_refresh.add(symbol)
+                    bars = await self.rest.candles(symbol, "5m", 120)
+                else:
+                    merged = {bar.timestamp: bar for bar in previous_bars}
+                    merged.update({bar.timestamp: bar for bar in updates})
+                    bars = sorted(merged.values(), key=lambda bar: bar.timestamp)[-120:]
             else:
                 bars = await self.rest.candles(symbol, "5m", 120)
         except Exception as exc:
