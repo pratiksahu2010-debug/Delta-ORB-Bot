@@ -60,3 +60,23 @@ def test_fixed_universe_rejects_duplicate_symbols(tmp_path):
     settings = Settings(momentum_symbols_file=str(momentum_path))
     with pytest.raises(ValueError, match="Duplicate symbol"):
         _ = settings.mex_core_symbol_list
+
+
+
+def test_lightweight_scanner_profile_limits_active_universe_without_changing_source_lists():
+    settings = Settings(
+        scanner_symbol_limit=40,
+        momentum_symbols_file=str(ROOT / "config" / "momentum_symbols.txt"),
+        tpr_rb_symbols_file=str(ROOT / "config" / "tpr_rb_symbols.txt"),
+    )
+
+    assert len(settings.symbol_list) == 40
+    assert len(set(settings.symbol_list)) == 40
+    assert len(settings.tpr_rb_symbol_list) == 60
+    assert len(settings.mex_core_symbol_list) == 60
+    assert settings.momentum_symbol_list == settings.symbol_list
+
+
+def test_scanner_symbol_limit_rejects_values_above_supported_universe():
+    with pytest.raises(ValueError):
+        Settings(scanner_symbol_limit=121)

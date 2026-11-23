@@ -148,13 +148,16 @@ class SignalEngine:
         )
         self.shadow_ml = None
         self.shadow_ml_tasks: set[asyncio.Task] = set()
-        try:
-            from .ml_shadow import ShadowML
-            self.shadow_ml = ShadowML(self.journal)
-        except Exception:
-            logging.getLogger(__name__).exception(
-                "Shadow ML service initialization failed; live signal flow remains independent"
-            )
+        if bool(getattr(settings, "shadow_ml_enabled", False)):
+            try:
+                from .ml_shadow import ShadowML
+                self.shadow_ml = ShadowML(self.journal)
+            except Exception:
+                logging.getLogger(__name__).exception(
+                    "Shadow ML service initialization failed; live signal flow remains independent"
+                )
+        else:
+            log.info("Shadow ML disabled by lightweight runtime profile")
         self.delivery_retry_at: dict[str, datetime] = {}
         self.outbox_lock = asyncio.Lock()
 
