@@ -32,6 +32,7 @@ def test_lifespan_starts_and_closes_engine(monkeypatch):
 
     class FakeEngine:
         def __init__(self, settings, notifier):
+            self.notifier = notifier
             self.store = SimpleNamespace(backend="test")
             self.pending_restore = {"restored": 0}
             self.closed = False
