@@ -352,12 +352,13 @@ async def status():
 
 @app.get("/health")
 async def health():
-    """Cheap process-readiness alias for existing Render health-check configuration.
+    """Cheap process liveness probe for Render; detailed readiness remains at /ready.
 
-    Full market, strategy, persistence and Telegram diagnostics are available at
-    /status. Health probes must not rebuild that large snapshot every few seconds.
+    Render must not restart a healthy ASGI process because the engine is still
+    warming up or a background task is restarting. Full diagnostics remain at
+    /status, while /ready reports whether the signal engine can currently scan.
     """
-    return await ready()
+    return await ping()
 
 
 @app.get("/admin/signal-history")
