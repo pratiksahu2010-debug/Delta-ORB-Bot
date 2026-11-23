@@ -159,7 +159,7 @@ class TelegramNotifier:
         return await self._telegram_api("deleteWebhook", {})
 
     async def _telegram_api(self, method: str, payload: dict) -> bool:
-        if not self.configured:
+        if not self.token:
             return False
         url = f"https://api.telegram.org/bot{self.token}/{method}"
         try:
