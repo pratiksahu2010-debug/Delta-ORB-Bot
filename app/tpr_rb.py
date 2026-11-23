@@ -11,9 +11,13 @@ from .momentum import _frame, _indicators, _base_result, _reject
 from .tpr_setup import evaluate_tpr_setup
 
 
-def evaluate_tpr(frame: pd.DataFrame, *, adx_min: float = 17.0, diagnostics=None):
+def evaluate_tpr(
+    frame: pd.DataFrame, *, adx_min: float = 17.0, diagnostics=None, prepared=False,
+):
     """Trend Pullback Reversal: completed-candle pullback/rejection setup."""
-    result = evaluate_tpr_setup(frame, adx_min=adx_min, diagnostics=diagnostics)
+    result = evaluate_tpr_setup(
+        frame, adx_min=adx_min, diagnostics=diagnostics, prepared=prepared,
+    )
     if result:
         result["strategy"] = "TPR"
         result["indicators"] = {
@@ -38,6 +42,7 @@ def evaluate_rb(
     min_range_atr: float = 0.60,
     max_range_atr: float = 4.50,
     diagnostics=None,
+    prepared: bool = False,
 ):
     """Range Breakout: break a mature 12-bar range with volume and clean close.
 
@@ -45,12 +50,15 @@ def evaluate_rb(
     buffer is used for the quote trigger, while the close must already prove
     acceptance beyond the range. This is not an ORB/session-opening strategy.
     """
-    f = _frame(frame, diagnostics)
-    if f is None:
-        return None
     if range_lookback < 8 or range_lookback > 30:
         return _reject(diagnostics, "configuration", "invalid_range_lookback")
-    f = _indicators(f)
+    if prepared:
+        f = frame
+    else:
+        f = _frame(frame, diagnostics)
+        if f is None:
+            return None
+        f = _indicators(f)
     c = f.iloc[-1]
     vals = [c.atr, c.rvol, c.ema9, c.ema21, c.plus_di, c.minus_di, c.rsi, c.vwap]
     if any(pd.isna(x) for x in vals) or float(c.atr) <= 0:
