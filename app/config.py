@@ -169,7 +169,9 @@ class Settings(BaseSettings):
                     raise ValueError
                 zone_name, open_time, active_minutes = values
                 ZoneInfo(str(zone_name))
-                datetime_time.fromisoformat(str(open_time))
+                parsed_open = datetime_time.fromisoformat(str(open_time))
+                if parsed_open.tzinfo is not None or parsed_open.isoformat(timespec="minutes") != str(open_time):
+                    raise ValueError
                 if isinstance(active_minutes, bool) or int(active_minutes) != active_minutes or int(active_minutes) < 1:
                     raise ValueError
                 sessions[name] = (str(zone_name), str(open_time), int(active_minutes))
