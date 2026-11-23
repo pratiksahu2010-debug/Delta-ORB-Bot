@@ -42,3 +42,20 @@ def test_store_health_fails_when_database_is_corrupt(tmp_path):
     path.write_bytes(b"not a sqlite database")
     with pytest.raises(sqlite3.DatabaseError):
         SignalStore(str(path))
+
+
+def test_health_endpoint_delegates_to_lightweight_readiness(monkeypatch):
+    import asyncio
+    import app.main as main
+
+    expected = object()
+
+    async def fake_ping():
+        return expected
+
+    def fail_if_diagnostics_run():
+        raise AssertionError("health must not build the full diagnostics snapshot")
+
+    monkeypatch.setattr(main, "ping", fake_ping)
+    monkeypatch.setattr(main, "_operational_snapshot", fail_if_diagnostics_run)
+    assert asyncio.run(main.health()) is expected

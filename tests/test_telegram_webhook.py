@@ -335,9 +335,9 @@ def test_monitoring_routes_separate_liveness_readiness_and_status(webhook_env, m
     assert ping.status_code == 200
     assert ping.content == b""
     assert health.status_code == 200
+    assert health.content == b""
     assert ready.status_code == 503
     assert status.status_code == 200
-    assert health.json()["status"] == "starting"
     assert status.json()["status"] == "starting"
     response_text = health.text + ready.text + status.text
     assert "TELEGRAM_SECRET_SENTINEL" not in response_text
@@ -367,6 +367,7 @@ def test_health_and_status_redact_sensitive_engine_diagnostics(webhook_env, monk
     ready = env["client"].get("/ready")
 
     assert health.status_code == 200
+    assert health.content == b""
     assert status.status_code == 200
     assert ready.status_code == 503
     combined = health.text + status.text + ready.text
