@@ -85,7 +85,7 @@ async def lifespan(app: FastAPI):
                 "register the webhook manually"
             )
         else:
-            if notifier.configured:
+            if notifier.token:
                 removed = await notifier.delete_webhook()
                 if removed:
                     logging.getLogger(__name__).info(
