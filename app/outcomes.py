@@ -127,7 +127,25 @@ def evaluate_market_outcome(
             continue
         eligible.append((stamp, opn, high, low, close))
     eligible.sort(key=lambda row: row[0])
-    eligible = eligible[:horizon]
+
+    # Outcome horizons are elapsed 5-minute intervals, not merely the number
+    # of rows returned by REST. Stop at the first missing bar: prices after a
+    # gap cannot establish whether a stop or target was crossed in the gap.
+    contiguous = []
+    expected_epoch = first_full_bar_epoch
+    data_gap_at = None
+    data_gap_seconds = None
+    for row in eligible:
+        epoch = int(row[0].timestamp())
+        if epoch != expected_epoch:
+            data_gap_at = datetime.fromtimestamp(expected_epoch, tz=timezone.utc).isoformat()
+            data_gap_seconds = epoch - expected_epoch
+            break
+        contiguous.append(row)
+        expected_epoch += BAR_SECONDS
+        if len(contiguous) >= horizon:
+            break
+    eligible = contiguous
 
     mfe_abs = 0.0
     mae_abs = 0.0
@@ -245,7 +263,9 @@ def evaluate_market_outcome(
             bars_to_resolution = bars_observed
             break
 
-    complete = final_result in {"win", "loss"} or bars_observed >= horizon
+    complete = final_result in {"win", "loss"} or (
+        bars_observed >= horizon and data_gap_at is None
+    )
     if complete and final_result == "pending":
         final_result = "expired"
         exit_price = last_close
@@ -271,6 +291,9 @@ def evaluate_market_outcome(
         "method": "completed_5m_ohlc_path",
         "horizon_bars": horizon,
         "bars_observed": bars_observed,
+        "data_gap": data_gap_at is not None,
+        "data_gap_at": data_gap_at,
+        "data_gap_seconds": data_gap_seconds,
         "first_hit": first_hit,
         "first_hit_at": first_hit_at,
         "first_event": first_hit.lower() if first_hit else None,
@@ -309,6 +332,7 @@ def evaluate_market_outcome(
         "net_return_pct": _rounded(net_return_pct),
         "complete": complete,
         "limitations": [
+            "A missing 5m candle ends the measurable path; later candles are ignored because the stop/target order across the gap is unknown.",
             "Completed 5m OHLC bars cannot establish intrabar order when the open does not resolve a stop/target collision.",
             "Event timestamps are the completed candle close, not an inferred intrabar execution timestamp.",
             "TP1 is recorded as a path event; the measurement continues to TP2, SL or expiry and does not simulate partial fills.",
