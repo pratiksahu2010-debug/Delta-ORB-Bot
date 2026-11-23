@@ -1015,13 +1015,17 @@ class SignalEngine:
                     ))
             if (self._module_enabled("ORB") and symbol in self.settings.symbol_list
                     and getattr(self.settings, "orb_enabled", True)):
+                orb_sessions = getattr(self.settings, "orb_session_config", None)
                 momentum_specs.append((
                     "ORB",
                     lambda diagnostics: evaluate_orb(
                         frame,
                         min_rvol=float(getattr(self.settings, "orb_min_rvol", 1.10)),
-                        enabled_sessions=tuple(self.settings.orb_session_config),
-                        sessions=self.settings.orb_session_config,
+                        enabled_sessions=(
+                            tuple(orb_sessions) if orb_sessions is not None
+                            else ("asia", "london", "new_york")
+                        ),
+                        sessions=orb_sessions,
                         diagnostics=diagnostics,
                     ),
                 ))
