@@ -59,6 +59,23 @@ def make_setup(side, now):
 
 
 
+
+def test_engine_caches_symbol_universe_for_hot_paths(tmp_path):
+    engine, _notifier = make_engine(tmp_path)
+    assert engine.configured_symbols == ["BTCUSD"]
+    assert engine.configured_symbol_set == frozenset({"BTCUSD"})
+    assert engine.tpr_rb_symbols == frozenset({"BTCUSD"})
+
+    # Runtime membership uses the startup snapshot, not mutable Settings lists.
+    engine.settings.symbol_list = ["ETHUSD"]
+    engine.settings.tpr_rb_symbol_list = ["ETHUSD"]
+    assert "BTCUSD" in engine.configured_symbol_set
+    assert "ETHUSD" not in engine.configured_symbol_set
+    assert "BTCUSD" in engine.tpr_rb_symbols
+    assert "ETHUSD" not in engine.tpr_rb_symbols
+    asyncio.run(engine.rest.close())
+
+
 def test_candle_gap_invalidates_all_pending_strategy_setups(tmp_path):
     engine, _notifier = make_engine(tmp_path)
     now = datetime.now(timezone.utc)
