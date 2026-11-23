@@ -544,6 +544,19 @@ class SignalEngine:
         except Exception:
             log.exception("Unable to delete persisted pending setup symbol=%s strategy=%s", symbol, strategy)
 
+    def _invalidate_pending_setups_for_symbol(self, symbol: str, reason: str) -> None:
+        """Fail closed when recent completed-candle history is discontinuous."""
+        for strategy, setup in list(self._setups_for_symbol(symbol)):
+            self._record_trigger_event(strategy, symbol, reason)
+            if not self._transition_setup(setup, "INVALIDATED", reason):
+                log.error(
+                    "Unable to persist setup invalidation symbol=%s strategy=%s reason=%s",
+                    symbol, strategy, reason,
+                )
+            # Remove the in-memory intent even if persistence is unhealthy: a
+            # known candle-history gap must never leave it eligible for quotes.
+            self._remove_pending_setup(symbol, strategy, setup)
+
     def on_stream_disconnect(self) -> None:
         """Discard partial breakout confirmation across a WebSocket outage."""
         for symbol in set(self.pending) | {key[0] for key in self.momentum_pending}:
@@ -981,6 +994,9 @@ class SignalEngine:
                for previous, current in zip(recent, recent[1:])):
             diagnostic.update(state="gap", reason="missing_5m_intervals")
             self.candles[symbol] = bars
+            self._invalidate_pending_setups_for_symbol(
+                symbol, "invalidated_missing_5m_candle_intervals",
+            )
             log.warning("Skipping strategy evaluation due to missing 5m intervals symbol=%s", symbol)
             return
         self.candles[symbol] = bars
