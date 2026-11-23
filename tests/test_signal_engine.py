@@ -1367,3 +1367,27 @@ def test_rest_snapshots_never_start_or_advance_breakout_confirmation(tmp_path):
         await engine.rest.close()
 
     asyncio.run(run())
+
+
+def test_rest_quote_fallback_skips_poll_when_all_websocket_quotes_are_fresh():
+    from app.signal_engine import _rest_quote_fallback_needed
+
+    now = datetime.now(timezone.utc)
+    received = {"BTCUSD": now - timedelta(seconds=0.2), "ETHUSD": now - timedelta(seconds=1.0)}
+    assert not _rest_quote_fallback_needed(
+        ["BTCUSD", "ETHUSD"], received, now, stale_after_seconds=1.5,
+    )
+
+
+def test_rest_quote_fallback_polls_when_any_symbol_quote_is_stale_or_missing():
+    from app.signal_engine import _rest_quote_fallback_needed
+
+    now = datetime.now(timezone.utc)
+    received = {"BTCUSD": now - timedelta(seconds=0.2)}
+    assert _rest_quote_fallback_needed(
+        ["BTCUSD", "ETHUSD"], received, now, stale_after_seconds=1.5,
+    )
+    received["ETHUSD"] = now - timedelta(seconds=2.0)
+    assert _rest_quote_fallback_needed(
+        ["BTCUSD", "ETHUSD"], received, now, stale_after_seconds=1.5,
+    )
