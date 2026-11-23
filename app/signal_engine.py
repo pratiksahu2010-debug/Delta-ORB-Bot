@@ -20,6 +20,20 @@ from .risk import LIVE_TARGET_R_MULTIPLE
 log = logging.getLogger(__name__)
 
 
+def _rest_quote_fallback_needed(
+    active_symbols: list[str],
+    received_at: dict[str, datetime],
+    now: datetime,
+    stale_after_seconds: float,
+) -> bool:
+    """Only call the full-universe REST ticker endpoint when an L1 quote is stale."""
+    return any(
+        symbol not in received_at
+        or (now - received_at[symbol]).total_seconds() >= stale_after_seconds
+        for symbol in active_symbols
+    )
+
+
 @dataclass
 class PendingSetup:
     symbol: str
@@ -1207,9 +1221,20 @@ class SignalEngine:
             last_error_log = 0.0
             while True:
                 try:
-                    rows = await self.rest.tickers()
                     received = datetime.now(timezone.utc)
                     active = set(self.active_symbols)
+                    # The WebSocket is the primary L1 feed. Avoid downloading and
+                    # scanning the entire ticker universe every second while all
+                    # subscribed symbols are already receiving fresh quotes.
+                    fallback_after = max(
+                        0.5, min(1.5, float(self.settings.quote_max_age_seconds) * 0.5)
+                    )
+                    if not _rest_quote_fallback_needed(
+                        self.active_symbols, self.received_at, received, fallback_after,
+                    ):
+                        await asyncio.sleep(1.0)
+                        continue
+                    rows = await self.rest.tickers()
                     updated = 0
                     for row in rows:
                         if not isinstance(row, dict):
