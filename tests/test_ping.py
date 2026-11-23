@@ -17,9 +17,10 @@ def test_lifespan_starts_and_closes_engine(monkeypatch):
 
     class FakeNotifier:
         configured = False
+        token = ""
 
         def __init__(self, token, chat_id):
-            pass
+            self.token = token
 
     class FakeEngine:
         def __init__(self, settings, notifier):
