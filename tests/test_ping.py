@@ -17,13 +17,22 @@ def test_lifespan_starts_and_closes_engine(monkeypatch):
 
     class FakeNotifier:
         configured = False
-        token = ""
+        token = "test-token"
 
         def __init__(self, token, chat_id):
             self.token = token
+            self.deleted_webhooks = 0
+
+        async def delete_webhook(self):
+            self.deleted_webhooks += 1
+            return True
+
+        async def register_webhook(self, webhook_url, secret):
+            raise AssertionError("Telegram webhook registration must stay disabled")
 
     class FakeEngine:
         def __init__(self, settings, notifier):
+            self.notifier = notifier
             self.store = SimpleNamespace(backend="test")
             self.pending_restore = {"restored": 0}
             self.closed = False
@@ -39,9 +48,9 @@ def test_lifespan_starts_and_closes_engine(monkeypatch):
 
     fake_settings = SimpleNamespace(
         validate_safety=lambda: None,
-        telegram_bot_token="",
+        telegram_bot_token="test-token",
         telegram_chat_id="",
-        telegram_webhook_secret="",
+        telegram_webhook_secret="configured-but-ignored",
         symbol_list=["BTCUSD"],
         signal_only=True,
         orders_enabled=False,
@@ -54,6 +63,7 @@ def test_lifespan_starts_and_closes_engine(monkeypatch):
         async with main.app.router.lifespan_context(main.app):
             assert main.engine is not None
             assert main.engine_task is not None
+            assert main.engine.notifier.deleted_webhooks == 1
             await asyncio.sleep(0)
         assert main.engine_task is None
         assert main.engine.closed is True

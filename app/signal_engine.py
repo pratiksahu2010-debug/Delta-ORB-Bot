@@ -864,20 +864,9 @@ class SignalEngine:
                 try:
                     self.telegram_delivery["attempts"] += 1
                     self.telegram_delivery["last_attempt_at"] = datetime.now(timezone.utc).isoformat()
-                    evaluation_id = self.journal.evaluation_id(
-                        str(alert.get("strategy", "UNKNOWN")),
-                        str(alert["symbol"]),
-                        str(alert["setup_time"]),
-                    )
-                    # Do not display dead review buttons when inbound webhook auth is absent.
-                    feedback_token = (
-                        self.journal.create_feedback_token(evaluation_id)
-                        if (
-                            getattr(self.settings, "telegram_webhook_secret", "")
-                            and getattr(self.settings, "telegram_feedback_user_ids", [])
-                        ) else ""
-                    )
-                    delivered = await self.notifier.send_signal(alert, feedback_token=feedback_token)
+                    # This deployment is outbound-only; do not emit inline feedback
+                    # buttons that require an inbound Telegram webhook.
+                    delivered = await self.notifier.send_signal(alert)
                     delivery = getattr(self.notifier, "last_delivery", {}) or {}
                     self.telegram_delivery["last_status"] = delivery.get("status", "sent" if delivered else "failed")
                     self.telegram_delivery["last_http_status"] = delivery.get("http_status")
@@ -1047,8 +1036,12 @@ class SignalEngine:
         candle_close_time = latest.timestamp + timedelta(minutes=5)
         candle_lag = (datetime.now(timezone.utc) - candle_close_time).total_seconds()
         if candle_lag > self.settings.max_candle_lag_seconds:
+            already_stale = diagnostic.get("state") == "stale"
             diagnostic.update(state="stale", reason="latest_completed_candle_too_old")
-            log.warning("Skipping stale 5m candles symbol=%s lag_seconds=%.1f", symbol, candle_lag)
+            # Keep the per-symbol diagnostic current without emitting 120 repeated
+            # warnings every poll while the exchange history feed is delayed.
+            if not already_stale:
+                log.warning("Skipping stale 5m candles symbol=%s lag_seconds=%.1f", symbol, candle_lag)
             return
         recent = bars[-60:]
         if any((current.timestamp - previous.timestamp).total_seconds() != 300
@@ -1321,7 +1314,7 @@ class SignalEngine:
                     if self.rest_quote_polls == 1 or self.rest_quote_polls % 30 == 0:
                         log.info(
                             "Delta REST ticker fallback poll=%s updated=%s active=%s",
-                            self.rest_quote_polls, updated, len(active),
+                            self.rest_quote_polls, updated, len(self.active_symbols),
                         )
                     await asyncio.sleep(1.0)
                 except asyncio.CancelledError:
