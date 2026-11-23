@@ -227,8 +227,9 @@ def test_rest_candle_request_supports_incremental_start(monkeypatch):
 
         monkeypatch.setattr(client.client, "get", fake_get)
         monkeypatch.setattr("app.market_data.parse_rest_candles", lambda *_args: [])
-        assert await client.candles("BTCUSD", "5m", 120, since=1800000000) == []
-        assert calls[0]["start"] == 1800000000
+        start = int(__import__("time").time()) - 1000
+        assert await client.candles("BTCUSD", "5m", 120, since=start) == []
+        assert calls[0]["start"] == start
         assert calls[0]["symbol"] == "BTCUSD"
         assert calls[0]["resolution"] == "5m"
         await client.close()
