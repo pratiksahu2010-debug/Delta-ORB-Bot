@@ -1,6 +1,9 @@
 import logging
 import os
 import math
+import json
+from datetime import time as datetime_time
+from zoneinfo import ZoneInfo
 from pathlib import Path
 
 from pydantic import Field
@@ -24,6 +27,8 @@ class Settings(BaseSettings):
     mex_enabled: bool = True
     orb_enabled: bool = True
     orb_min_rvol: float = 1.10
+    # JSON: session -> [IANA timezone, local HH:MM opening, active minutes].
+    orb_sessions: str = '{"asia":["Asia/Tokyo","09:00",120],"london":["Europe/London","08:00",120],"new_york":["America/New_York","09:30",120]}'
     tpr_enabled: bool = True
     rb_enabled: bool = True
     rb_min_rvol: float = 1.45
@@ -151,8 +156,32 @@ class Settings(BaseSettings):
     def is_production(self) -> bool:
         return self.app_env.lower() in {"production", "prod"} or bool(os.getenv("RENDER_SERVICE_ID"))
 
+
+    @property
+    def orb_session_config(self) -> dict[str, tuple[str, str, int]]:
+        try:
+            raw = json.loads(self.orb_sessions)
+            if not isinstance(raw, dict) or not raw:
+                raise ValueError
+            sessions = {}
+            for name, values in raw.items():
+                if name not in {"asia", "london", "new_york"} or not isinstance(values, list) or len(values) != 3:
+                    raise ValueError
+                zone_name, open_time, active_minutes = values
+                ZoneInfo(str(zone_name))
+                parsed_open = datetime_time.fromisoformat(str(open_time))
+                if parsed_open.tzinfo is not None or parsed_open.isoformat(timespec="minutes") != str(open_time):
+                    raise ValueError
+                if isinstance(active_minutes, bool) or int(active_minutes) != active_minutes or int(active_minutes) < 1:
+                    raise ValueError
+                sessions[name] = (str(zone_name), str(open_time), int(active_minutes))
+            return sessions
+        except (TypeError, ValueError, json.JSONDecodeError, KeyError):
+            raise ValueError("ORB_SESSIONS must be a JSON object of supported sessions with valid IANA timezones, HH:MM openings and positive active minutes") from None
+
     def validate_safety(self) -> None:
         _ = self.enabled_modules  # validates BOT_MODULE before the engine starts
+        _ = self.orb_session_config  # validates ORB session settings
         if not self.signal_only or self.orders_enabled:
             raise ValueError("Unsafe configuration: signal-only must be true and order execution must be disabled")
         float_thresholds = (

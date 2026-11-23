@@ -7,6 +7,7 @@ Only the ORB module: Session ORB plus its nested Range Breakout (RB) and Trend P
 
 - Fixed market-data universe: 120 symbols.
 - 5-minute completed candles and live quote confirmation are retained.
+- ORB defaults: Tokyo 09:00, London 08:00 and New York 09:30 in each session's local timezone. The first completed 5-minute candle defines the opening range; breakouts are eligible for the next 120 minutes. IANA timezones handle daylight-saving changes. Configure with `ORB_SESSIONS`.
 - Existing indicator calculations, strategy thresholds, trigger confirmation, structural stop validation, signal journal, Telegram delivery and market-data handling are retained.
 - 15-minute context remains informational; this split does not add a new 15-minute blocking gate.
 - Signal-only: `SIGNAL_ONLY=true`, `ORDERS_ENABLED=false`. Order execution is not implemented/enabled.
