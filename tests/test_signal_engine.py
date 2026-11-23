@@ -59,6 +59,32 @@ def make_setup(side, now):
 
 
 
+def test_candle_gap_invalidates_all_pending_strategy_setups(tmp_path):
+    engine, _notifier = make_engine(tmp_path)
+    now = datetime.now(timezone.utc)
+    tpr = make_setup("LONG", now)
+    rb = make_setup("SHORT", now)
+    rb.strategy = "RB"
+    engine.pending["BTCUSD"] = tpr
+    engine.momentum_pending[("BTCUSD", "RB")] = rb
+
+    engine._invalidate_pending_setups_for_symbol(
+        "BTCUSD", "invalidated_missing_5m_candle_intervals",
+    )
+
+    assert "BTCUSD" not in engine.pending
+    assert ("BTCUSD", "RB") not in engine.momentum_pending
+    assert engine.store.setup_lifecycle(
+        "BTCUSD", "TPR", tpr.candle_time.isoformat(),
+    )["state"] == "INVALIDATED"
+    assert engine.store.setup_lifecycle(
+        "BTCUSD", "RB", rb.candle_time.isoformat(),
+    )["state"] == "INVALIDATED"
+    assert engine.store.load_pending_setups() == []
+    import asyncio
+    asyncio.run(engine.rest.close())
+
+
 def test_long_trigger_uses_ask_and_recalculates_target(tmp_path):
     async def run():
         engine, notifier = make_engine(tmp_path)
