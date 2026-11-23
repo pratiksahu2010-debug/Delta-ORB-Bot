@@ -154,6 +154,10 @@ class TelegramNotifier:
                 "allowed_updates": ["message", "edited_message", "callback_query"]},
         )
 
+    async def delete_webhook(self) -> bool:
+        """Remove any previously registered Telegram webhook for this bot."""
+        return await self._telegram_api("deleteWebhook", {})
+
     async def _telegram_api(self, method: str, payload: dict) -> bool:
         if not self.configured:
             return False
