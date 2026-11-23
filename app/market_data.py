@@ -156,10 +156,20 @@ class DeltaRestClient:
             return response
         raise RuntimeError("Delta REST request exhausted retries")
 
-    async def candles(self, symbol: str, resolution: str, limit: int = 120) -> list[Candle]:
+    async def candles(
+        self, symbol: str, resolution: str, limit: int = 120, *,
+        since: int | None = None,
+    ) -> list[Candle]:
+        """Fetch full history or only candles from an inclusive epoch start.
+
+        Incremental callers retain and merge existing history. The overlap is
+        intentional so the newest closed candle can be corrected by the exchange.
+        """
         seconds = RESOLUTION_SECONDS[resolution]
         end = int(time.time())
-        start = end - seconds * (limit + 3)
+        start = int(since) if since is not None else end - seconds * (limit + 3)
+        if start < 0 or start >= end:
+            raise ValueError("Candle request start must be a past Unix timestamp")
         response = await self._get_with_retry(
             "/v2/history/candles",
             params={"resolution": resolution, "symbol": symbol, "start": start, "end": end},
@@ -167,7 +177,7 @@ class DeltaRestClient:
         payload = response.json()
         if isinstance(payload, dict) and payload.get("success") is False:
             raise RuntimeError(f"Delta candle API error: {payload.get('error')}")
-        return parse_rest_candles(payload, resolution) [-limit:]
+        return parse_rest_candles(payload, resolution)[-limit:]
 
     async def tickers(self) -> list[dict[str, Any]]:
         """Fetch the current public ticker snapshot for all live perpetuals."""
