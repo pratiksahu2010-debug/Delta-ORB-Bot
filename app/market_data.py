@@ -57,8 +57,12 @@ def parse_rest_candles(payload: Any, resolution: str, now: datetime | None = Non
             log.warning("Skipping malformed Delta candle row: %s", exc)
             continue
         values = (candle.open, candle.high, candle.low, candle.close, candle.volume)
-        if not all(math.isfinite(value) for value in values) or candle.volume < 0:
-            log.warning("Skipping non-finite or negative-volume Delta candle timestamp=%s", ts)
+        if (not all(math.isfinite(value) for value in values)
+                or min(candle.open, candle.high, candle.low, candle.close) <= 0
+                or candle.volume < 0):
+            log.warning(
+                "Skipping non-finite, non-positive-price, or negative-volume Delta candle timestamp=%s", ts
+            )
             continue
         # Reject off-grid timestamps instead of creating shifted/overlapping bars.
         if int(ts.timestamp()) % seconds != 0:
