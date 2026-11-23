@@ -10,7 +10,7 @@ import pandas as pd
 
 from .market_data import DeltaRestClient, DeltaPublicStream
 from .models import Candle, Quote
-from .momentum import evaluate_orb
+from .momentum import _frame, _indicators, evaluate_orb
 from .tpr_rb import evaluate_tpr, evaluate_rb
 from .state_store import SignalStore
 from .signal_journal import SignalJournal
@@ -1016,22 +1016,27 @@ class SignalEngine:
                 "timestamp": b.timestamp, "open": b.open, "high": b.high,
                 "low": b.low, "close": b.close, "volume": b.volume,
             } for b in bars])
+            # All enabled detectors consume the same completed-candle history.
+            # Validate it and calculate the common indicators once, rather than
+            # repeating full pandas pipelines independently for TPR, RB and ORB.
+            validated_frame = _frame(frame)
+            prepared_frame = _indicators(validated_frame) if validated_frame is not None else None
 
             momentum_specs = []
             if self._module_enabled("ORB") and symbol in getattr(self.settings, "tpr_rb_symbol_list", ()):
                 if getattr(self.settings, "tpr_enabled", True):
                     momentum_specs.append((
-                        "TPR", lambda diagnostics: evaluate_tpr(
-                            frame, adx_min=float(getattr(self.settings, "adx_min", 17.0)),
-                            diagnostics=diagnostics,
+                        "TPR", lambda diagnostics, prepared: evaluate_tpr(
+                            prepared, adx_min=float(getattr(self.settings, "adx_min", 17.0)),
+                            diagnostics=diagnostics, prepared=True,
                         ),
                     ))
                 if getattr(self.settings, "rb_enabled", True):
                     momentum_specs.append((
-                        "RB", lambda diagnostics: evaluate_rb(
-                            frame, min_rvol=float(getattr(self.settings, "rb_min_rvol", 1.45)),
+                        "RB", lambda diagnostics, prepared: evaluate_rb(
+                            prepared, min_rvol=float(getattr(self.settings, "rb_min_rvol", 1.45)),
                             range_lookback=int(getattr(self.settings, "rb_range_lookback", 12)),
-                            diagnostics=diagnostics,
+                            diagnostics=diagnostics, prepared=True,
                         ),
                     ))
             if (self._module_enabled("ORB") and symbol in self.settings.symbol_list
@@ -1039,8 +1044,8 @@ class SignalEngine:
                 orb_sessions = getattr(self.settings, "orb_session_config", None)
                 momentum_specs.append((
                     "ORB",
-                    lambda diagnostics: evaluate_orb(
-                        frame,
+                    lambda diagnostics, prepared: evaluate_orb(
+                        prepared,
                         min_rvol=float(getattr(self.settings, "orb_min_rvol", 1.10)),
                         enabled_sessions=(
                             tuple(orb_sessions) if orb_sessions is not None
@@ -1048,6 +1053,7 @@ class SignalEngine:
                         ),
                         sessions=orb_sessions,
                         diagnostics=diagnostics,
+                        prepared=True,
                     ),
                 ))
 
@@ -1071,7 +1077,14 @@ class SignalEngine:
                     continue
                 current_strategy = strategy
                 diagnostics = {}
-                result = evaluator(diagnostics)
+                if prepared_frame is None:
+                    # Preserve per-strategy validation diagnostics if a malformed
+                    # frame ever reaches this layer; normal market-data ingestion
+                    # rejects malformed candles before this point.
+                    result = None
+                    diagnostics.update(stage="data_validation", reason="invalid_shared_ohlcv_frame")
+                else:
+                    result = evaluator(diagnostics, prepared_frame)
                 if strategy == "MEX":
                     diagnostics["evaluation_source"] = "completed_candle"
                 self._record_strategy_evaluation(strategy, latest, result, symbol, diagnostics)
