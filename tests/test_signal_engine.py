@@ -893,6 +893,34 @@ def test_candle_gap_is_reported_and_symbol_is_not_ready(tmp_path, monkeypatch):
 
 
 
+def test_fenced_trigger_confirmation_never_enqueues_alert(tmp_path, monkeypatch):
+    async def run():
+        engine, notifier = make_engine(tmp_path)
+        now = datetime.now(timezone.utc)
+        setup = make_setup("LONG", now)
+        engine.pending["BTCUSD"] = setup
+        original_transition = engine._transition_setup
+
+        def reject_confirmed_transition(candidate, to_state, reason):
+            if to_state == "TRIGGER_CONFIRMED":
+                return False
+            return original_transition(candidate, to_state, reason)
+
+        monkeypatch.setattr(engine, "_transition_setup", reject_confirmed_transition)
+        first = Quote(price=101.2, bid=101.1, ask=101.2, received_at=now)
+        await engine.on_quote("BTCUSD", first, now)
+        later = now + timedelta(seconds=0.6)
+        second = Quote(price=101.2, bid=101.1, ask=101.2, received_at=later)
+        await engine.on_quote("BTCUSD", second, later)
+
+        assert engine.store.due_alerts() == []
+        assert notifier.alerts == []
+        assert setup.lifecycle_state == "CONFIRMING"
+        await engine.rest.close()
+
+    asyncio.run(run())
+
+
 def test_trigger_lifecycle_health_records_confirmation_and_delivery_path(tmp_path):
     async def run():
         engine, notifier = make_engine(tmp_path)
