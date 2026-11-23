@@ -37,3 +37,27 @@ def test_invalid_bot_module_fails_safety_validation():
     settings = Settings(bot_module="BOTH_BUT_NOT_ALL")
     with pytest.raises(ValueError, match="BOT_MODULE"):
         settings.validate_safety()
+
+
+def test_orb_health_strategy_count_includes_enabled_setup_types(monkeypatch):
+    from types import SimpleNamespace
+    import app.main as main
+
+    monkeypatch.setattr(main, "settings", SimpleNamespace(
+        enabled_modules=["ORB"],
+        module_enabled=lambda module: module == "ORB",
+        orb_enabled=True, rb_enabled=True, tpr_enabled=True, mex_enabled=True,
+    ))
+    assert main._enabled_strategy_count() == 3
+
+
+def test_mex_health_strategy_count_counts_only_mex(monkeypatch):
+    from types import SimpleNamespace
+    import app.main as main
+
+    monkeypatch.setattr(main, "settings", SimpleNamespace(
+        enabled_modules=["MEX"],
+        module_enabled=lambda module: module == "MEX",
+        orb_enabled=True, rb_enabled=True, tpr_enabled=True, mex_enabled=True,
+    ))
+    assert main._enabled_strategy_count() == 1
