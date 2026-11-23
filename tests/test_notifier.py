@@ -9,6 +9,7 @@ class FakeResponse:
     def __init__(self, status_code, payload):
         self.status_code = status_code
         self._payload = payload
+        self.content = b"{}" if payload is not None else b""
 
     def json(self):
         return self._payload
