@@ -864,11 +864,6 @@ class SignalEngine:
                 try:
                     self.telegram_delivery["attempts"] += 1
                     self.telegram_delivery["last_attempt_at"] = datetime.now(timezone.utc).isoformat()
-                    evaluation_id = self.journal.evaluation_id(
-                        str(alert.get("strategy", "UNKNOWN")),
-                        str(alert["symbol"]),
-                        str(alert["setup_time"]),
-                    )
                     # This deployment is outbound-only; do not emit inline feedback
                     # buttons that require an inbound Telegram webhook.
                     delivered = await self.notifier.send_signal(alert)
