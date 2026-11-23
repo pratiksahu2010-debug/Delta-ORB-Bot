@@ -11,6 +11,8 @@ log = logging.getLogger(__name__)
 class TelegramNotifier:
     def __init__(self, token: str, chat_id: str):
         self.token, self.chat_id = token, chat_id
+        # Reuse one connection pool instead of opening a new TLS client per alert.
+        self.client = httpx.AsyncClient(timeout=10)
         self.last_delivery = {"status": "never_attempted", "http_status": None, "error": None}
 
     @property
@@ -102,8 +104,7 @@ class TelegramNotifier:
                         {"text": "🔎 Needs Review", "callback_data": f"r|needs_review|{feedback_token}"},
                     ]]
                 }
-            async with httpx.AsyncClient(timeout=10) as client:
-                response = await client.post(url, json=request_payload)
+            response = await self.client.post(url, json=request_payload)
             http_status = response.status_code
             try:
                 payload = response.json()
@@ -134,8 +135,7 @@ class TelegramNotifier:
             return False
         url = f"https://api.telegram.org/bot{self.token}/sendMessage"
         try:
-            async with httpx.AsyncClient(timeout=10) as client:
-                response = await client.post(url, json={"chat_id": self.chat_id, "text": str(message)[:3900]})
+            response = await self.client.post(url, json={"chat_id": self.chat_id, "text": str(message)[:3900]})
             payload = response.json() if response.content else {}
             if response.status_code < 200 or response.status_code >= 300 or not payload.get("ok"):
                 self.last_delivery = {"status": "failed", "http_status": response.status_code, "error": "telegram_api_rejected"}
@@ -163,8 +163,7 @@ class TelegramNotifier:
             return False
         url = f"https://api.telegram.org/bot{self.token}/{method}"
         try:
-            async with httpx.AsyncClient(timeout=10) as client:
-                response = await client.post(url, json=payload)
+            response = await self.client.post(url, json=payload)
             data = response.json() if response.content else {}
             return 200 <= response.status_code < 300 and bool(data.get("ok"))
         except (httpx.HTTPError, ValueError):
@@ -183,3 +182,8 @@ class TelegramNotifier:
             "editMessageReplyMarkup",
             {"chat_id": chat_id, "message_id": message_id, "reply_markup": {"inline_keyboard": []}},
         )
+
+
+    async def close(self) -> None:
+        """Release the shared Telegram HTTP connection pool at shutdown."""
+        await self.client.aclose()
