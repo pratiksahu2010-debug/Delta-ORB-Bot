@@ -9,6 +9,7 @@ class FakeResponse:
     def __init__(self, status_code, payload):
         self.status_code = status_code
         self._payload = payload
+        self.content = b"{}" if payload is not None else b""
 
     def json(self):
         return self._payload
@@ -119,5 +120,18 @@ def test_signal_includes_inline_review_buttons_when_token_is_supplied(monkeypatc
         labels = [[button["text"] for button in row] for row in keyboard]
         assert labels == [["👍 Good", "👎 Bad", "⏰ Late"], ["🚫 Missed", "🔎 Needs Review"]]
         assert all(button["callback_data"].endswith("|abc123") for row in keyboard for button in row)
+
+    asyncio.run(run())
+
+
+
+def test_delete_webhook_calls_telegram_delete_method(monkeypatch):
+    async def run():
+        monkeypatch.setattr(httpx, "AsyncClient", FakeAsyncClient)
+        notifier = TelegramNotifier("test-token", "test-chat")
+        FakeAsyncClient.response = FakeResponse(200, {"ok": True})
+        assert await notifier.delete_webhook() is True
+        assert FakeAsyncClient.last_request["args"][0].endswith("/deleteWebhook")
+        assert FakeAsyncClient.last_request["kwargs"]["json"] == {}
 
     asyncio.run(run())

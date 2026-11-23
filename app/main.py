@@ -85,6 +85,16 @@ async def lifespan(app: FastAPI):
                 "register the webhook manually"
             )
         else:
+            if notifier.token:
+                removed = await notifier.delete_webhook()
+                if removed:
+                    logging.getLogger(__name__).info(
+                        "Telegram webhook removed; outbound Telegram notifications remain enabled"
+                    )
+                else:
+                    logging.getLogger(__name__).error(
+                        "Telegram webhook removal failed; verify bot API connectivity"
+                    )
             logging.getLogger(__name__).warning(
                 "Telegram inline reviews disabled: TELEGRAM_WEBHOOK_SECRET is not configured"
             )
