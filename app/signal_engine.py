@@ -196,7 +196,7 @@ class SignalEngine:
         except Exception as exc:
             self.active_symbols = []
             self.unavailable_symbols = list(self.configured_symbols)
-            self.stream.symbols = []
+            self.stream.set_symbols([])
             self.symbol_validation.update(
                 status="error", last_error=f"{type(exc).__name__}: {str(exc)[:200]}"
             )
@@ -207,7 +207,7 @@ class SignalEngine:
         self.unavailable_symbols = [
             symbol for symbol in self.configured_symbols if symbol not in live_symbols
         ]
-        self.stream.symbols = list(self.active_symbols)
+        self.stream.set_symbols(self.active_symbols)
         self.symbol_validation.update(
             status="ok" if not self.unavailable_symbols else "partial",
             last_error=None,
