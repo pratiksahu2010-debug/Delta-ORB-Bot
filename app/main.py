@@ -352,80 +352,12 @@ async def status():
 
 @app.get("/health")
 async def health():
-    data, report = _operational_snapshot()
-    telegram_configured = bool(settings.telegram_bot_token and settings.telegram_chat_id)
-    engine_ready = bool(report["ready"])
-    return redact_payload({
-        "service": "delta-exchange-india-signal-bot",
-        "status": "ok" if engine_ready else ("starting" if engine is None else "degraded"),
-        "signal_only": settings.signal_only,
-        "orders_enabled": settings.orders_enabled,
-        "bot_module": str(getattr(settings, "bot_module", "ALL")).upper(),
-        "strategy_adx_min": settings.adx_min,
-        "strategies": {
-            "module_count": len(_enabled_modules()),
-            "strategy_count": _enabled_strategy_count(),
-            "ORB": {
-                "enabled": _module_is_enabled("ORB") and settings.orb_enabled,
-                "symbol_count": len(settings.symbol_list),
-                "min_rvol": settings.orb_min_rvol,
-                "setup_types": {
-                    "ORB": _module_is_enabled("ORB") and settings.orb_enabled,
-                    "RB": _module_is_enabled("ORB") and settings.rb_enabled,
-                    "TPR": _module_is_enabled("ORB") and settings.tpr_enabled,
-                },
-                "rb_min_rvol": settings.rb_min_rvol,
-                "rb_range_lookback": settings.rb_range_lookback,
-                "tpr_adx_min": settings.adx_min,
-            },
-            "MEX": {
-                "enabled": _module_is_enabled("MEX") and settings.mex_enabled,
-                "symbol_count": len(settings.momentum_symbol_list),
-                "min_rvol": settings.mex_min_rvol,
-                "min_atr_expansion": settings.mex_min_atr_expansion,
-            },
-        },
-        "symbols": settings.symbol_list,
-        "active_symbols": list(engine.active_symbols) if engine else [],
-        "symbol_validation": data.get("symbol_validation"),
-        "unavailable_symbols": data.get("unavailable_symbols", []),
-        "symbol_universes": {
-            "universe_count": 2,
-            "mex_count": len(settings.momentum_symbol_list),
-            "tpr_rb_count": len(settings.tpr_rb_symbol_list),
-            "mex_symbols": settings.momentum_symbol_list,
-            "tpr_rb_symbols": settings.tpr_rb_symbol_list,
-        },
-        "market_data": data,
-        "readiness": {
-            "configured_symbols": len(settings.symbol_list),
-            "active_symbols": len(engine.active_symbols) if engine else 0,
-            "unavailable_symbols": len(data.get("unavailable_symbols", [])),
-            "candle_ready": data.get("candle_ready_count", 0),
-            "candle_warming": data.get("candle_warming_count", 0),
-            "candle_no_data": data.get("candle_no_data_count", 0),
-            "candle_errors": data.get("candle_error_count", 0),
-            "missing_quotes": len(data.get("quote_missing_symbols", [])),
-            "ready": report["ready"],
-            "checks": report["checks"],
-            "reasons": report["reasons"],
-            "engine_task": report["engine_task"],
-            "checked_at": report["checked_at"],
-        },
-        "telegram": "configured" if telegram_configured else "not_configured",
-        "telegram_test_endpoint_configured": bool(settings.telegram_test_key),
-        "persistence": {
-            "state_db_path": str(settings.state_db_path) if settings.database_backend == "sqlite" else None,
-            "database_backend": settings.database_backend,
-            "warning": (
-                "Default local SQLite path may be ephemeral on Render; mount a persistent disk "
-                "and set STATE_DB_PATH to a path on that disk."
-                if settings.app_env.lower() == "production" and settings.database_backend == "sqlite"
-                else None
-            ),
-        },
-        "execution": "disabled",
-    })
+    """Cheap process-readiness alias for existing Render health-check configuration.
+
+    Full market, strategy, persistence and Telegram diagnostics are available at
+    /status. Health probes must not rebuild that large snapshot every few seconds.
+    """
+    return await ready()
 
 
 @app.get("/admin/signal-history")
