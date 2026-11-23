@@ -135,12 +135,16 @@ def _base_result(f, side, strategy, reason, trigger_price, reference, atr_value,
 
 
 def evaluate_orb(frame, *, adx_min=None, min_rvol=1.10,
-                 enabled_sessions=("asia", "london", "new_york"), sessions=None, diagnostics=None):
+                 enabled_sessions=("asia", "london", "new_york"), sessions=None,
+                 diagnostics=None, prepared=False):
     """Detect a completed 5m close beyond a valid session opening range."""
-    f = _frame(frame, diagnostics)
-    if f is None:
-        return None
-    f = _indicators(f)
+    if prepared:
+        f = frame
+    else:
+        f = _frame(frame, diagnostics)
+        if f is None:
+            return None
+        f = _indicators(f)
     c = f.iloc[-1]
     # ADX is intentionally not an ORB gate; DI direction remains required.
     vals = [c.atr, c.plus_di, c.minus_di, c.ema20, c.ema50, c.rsi, c.vwap, c.rvol]
