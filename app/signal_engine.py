@@ -1266,7 +1266,6 @@ class SignalEngine:
             while True:
                 try:
                     received = datetime.now(timezone.utc)
-                    active = set(self.active_symbols)
                     # The WebSocket is the primary L1 feed. Avoid downloading and
                     # scanning the entire ticker universe every second while all
                     # subscribed symbols are already receiving fresh quotes.
