@@ -68,36 +68,21 @@ async def lifespan(app: FastAPI):
     notifier = TelegramNotifier(settings.telegram_bot_token, settings.telegram_chat_id)
     engine = SignalEngine(settings, notifier)
     try:
-        # Render exposes its public service URL automatically. Register the callback
-        # endpoint on startup so inline reviews cannot silently point nowhere.
-        public_url = os.getenv("RENDER_EXTERNAL_URL", "").strip().rstrip("/")
-        if settings.telegram_webhook_secret and public_url:
-            registered = await notifier.register_webhook(
-                f"{public_url}/telegram/webhook", settings.telegram_webhook_secret
-            )
-            if registered:
-                logging.getLogger(__name__).info("Telegram review webhook registered")
+        # This deployment is outbound-only: never register an inbound Telegram
+        # webhook, even if an old TELEGRAM_WEBHOOK_SECRET remains configured.
+        if notifier.token:
+            removed = await notifier.delete_webhook()
+            if removed:
+                logging.getLogger(__name__).info(
+                    "Telegram webhook removal confirmed; outbound notifications remain enabled"
+                )
             else:
-                logging.getLogger(__name__).error("Telegram review webhook registration failed")
-        elif settings.telegram_webhook_secret:
-            logging.getLogger(__name__).warning(
-                "Telegram review webhook secret is set but RENDER_EXTERNAL_URL is missing; "
-                "register the webhook manually"
-            )
-        else:
-            if notifier.token:
-                removed = await notifier.delete_webhook()
-                if removed:
-                    logging.getLogger(__name__).info(
-                        "Telegram webhook removed; outbound Telegram notifications remain enabled"
-                    )
-                else:
-                    logging.getLogger(__name__).error(
-                        "Telegram webhook removal failed; verify bot API connectivity"
-                    )
-            logging.getLogger(__name__).warning(
-                "Telegram inline reviews disabled: TELEGRAM_WEBHOOK_SECRET is not configured"
-            )
+                logging.getLogger(__name__).warning(
+                    "Telegram webhook removal could not be confirmed; verify Telegram API connectivity"
+                )
+        logging.getLogger(__name__).info(
+            "Telegram inbound webhook disabled; outbound notifications remain enabled"
+        )
         # Fail startup rather than silently scan without recovering durable setups.
         engine.restore_pending_setups()
         engine_task = asyncio.create_task(engine.run(), name="delta-signal-engine")
