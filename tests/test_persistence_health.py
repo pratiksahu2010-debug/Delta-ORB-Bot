@@ -50,12 +50,12 @@ def test_health_endpoint_delegates_to_lightweight_readiness(monkeypatch):
 
     expected = object()
 
-    async def fake_ready():
+    async def fake_ping():
         return expected
 
     def fail_if_diagnostics_run():
         raise AssertionError("health must not build the full diagnostics snapshot")
 
-    monkeypatch.setattr(main, "ready", fake_ready)
+    monkeypatch.setattr(main, "ping", fake_ping)
     monkeypatch.setattr(main, "_operational_snapshot", fail_if_diagnostics_run)
     assert asyncio.run(main.health()) is expected
