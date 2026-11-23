@@ -48,7 +48,7 @@ def test_lifespan_starts_and_closes_engine(monkeypatch):
 
     fake_settings = SimpleNamespace(
         validate_safety=lambda: None,
-        telegram_bot_token="",
+        telegram_bot_token="test-token",
         telegram_chat_id="",
         telegram_webhook_secret="configured-but-ignored",
         symbol_list=["BTCUSD"],
