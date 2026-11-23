@@ -20,6 +20,20 @@ from .risk import LIVE_TARGET_R_MULTIPLE
 log = logging.getLogger(__name__)
 
 
+def _stale_quote_symbols(
+    active_symbols: list[str],
+    received_at: dict[str, datetime],
+    now: datetime,
+    stale_after_seconds: float,
+) -> set[str]:
+    """Return only symbols whose WebSocket quote is old enough for REST fallback."""
+    return {
+        symbol for symbol in active_symbols
+        if symbol not in received_at
+        or (now - received_at[symbol]).total_seconds() >= stale_after_seconds
+    }
+
+
 def _rest_quote_fallback_needed(
     active_symbols: list[str],
     received_at: dict[str, datetime],
@@ -27,11 +41,7 @@ def _rest_quote_fallback_needed(
     stale_after_seconds: float,
 ) -> bool:
     """Only call the full-universe REST ticker endpoint when an L1 quote is stale."""
-    return any(
-        symbol not in received_at
-        or (now - received_at[symbol]).total_seconds() >= stale_after_seconds
-        for symbol in active_symbols
-    )
+    return bool(_stale_quote_symbols(active_symbols, received_at, now, stale_after_seconds))
 
 
 @dataclass
@@ -1250,8 +1260,9 @@ class SignalEngine:
                     return False
 
         async def refresh_rest_quotes() -> None:
-            """Keep the active universe quoted when quiet L1 books stop publishing."""
+            """Refresh stale quote snapshots at a bounded cadence; REST never confirms triggers."""
             last_error_log = 0.0
+            next_fallback_poll = 0.0
             while True:
                 try:
                     received = datetime.now(timezone.utc)
@@ -1262,18 +1273,27 @@ class SignalEngine:
                     fallback_after = max(
                         0.5, min(1.5, float(self.settings.quote_max_age_seconds) * 0.5)
                     )
-                    if not _rest_quote_fallback_needed(
+                    stale_symbols = _stale_quote_symbols(
                         self.active_symbols, self.received_at, received, fallback_after,
-                    ):
+                    )
+                    if not stale_symbols:
                         await asyncio.sleep(1.0)
                         continue
+                    now_monotonic = time.monotonic()
+                    if now_monotonic < next_fallback_poll:
+                        await asyncio.sleep(min(1.0, next_fallback_poll - now_monotonic))
+                        continue
+                    # One stale symbol must not cause a full-market REST ticker
+                    # download every second. REST quotes are diagnostic/freshness
+                    # snapshots only; WebSocket updates alone advance triggers.
+                    next_fallback_poll = now_monotonic + 5.0
                     rows = await self.rest.tickers()
                     updated = 0
                     for row in rows:
                         if not isinstance(row, dict):
                             continue
                         symbol = str(row.get("symbol") or "").upper()
-                        if symbol not in active:
+                        if symbol not in stale_symbols:
                             continue
                         last_received = self.received_at.get(symbol)
                         if last_received is not None and (received - last_received).total_seconds() < 0.8:
