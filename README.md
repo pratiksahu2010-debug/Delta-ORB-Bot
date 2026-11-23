@@ -1,9 +1,9 @@
 # Delta Exchange India Signal Bot — ORB
 
-This is an isolated single-module build from the supplied combined bot source.
+This deployment is configured to run the ORB module from a shared codebase. `BOT_MODULE=ORB` is the default.
 
 ## Strategy scope
-Only the ORB module: Session ORB plus its nested Range Breakout (RB) and Trend Pullback Rejection (TPR) setup types. The MEX detector and live-forming-candle evaluator are removed from this package.
+The active strategy scope is the ORB module: Session ORB plus its nested Range Breakout (RB) and Trend Pullback Rejection (TPR) setup types. MEX implementation code remains in the shared source tree, but it is disabled when `BOT_MODULE=ORB`; this is runtime module isolation, not source-code removal.
 
 - Fixed market-data universe: 120 symbols.
 - 5-minute completed candles and live quote confirmation are retained.
@@ -27,7 +27,7 @@ Only the ORB module: Session ORB plus its nested Range Breakout (RB) and Trend P
 - The blueprint uses the free web-service plan; the database is provisioned separately.
 
 ## Environment isolation
-`BOT_MODULE=ORB` identifies this single-module distribution. MEX detector code and live MEX candle evaluation are not shipped here.
+`BOT_MODULE=ORB` enables ORB/RB/TPR and disables MEX at runtime. The shared repository still contains MEX implementation and related status/diagnostic code; do not interpret this setting as removing those files from the source package.
 
 ## Checks
 Run the targeted isolation/health tests:
