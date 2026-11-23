@@ -163,7 +163,7 @@ def evaluate_orb(frame, *, adx_min=None, min_rvol=1.10,
     start_utc = start.astimezone(timezone.utc)
     opening = _opening_range_candle(f, start_utc)
     if opening is None:
-        return _reject(diagnostics, "opening_range", "opening_range_candle_missing", {"session": name, "opening_candle_matches": len(opening)})
+        return _reject(diagnostics, "opening_range", "opening_range_candle_missing", {"session": name, "opening_candle_matches": 0 if opening is None else len(opening)})
     rh, rl = float(opening.high.iloc[0]), float(opening.low.iloc[0])
     width_atr = (rh - rl) / float(c.atr)
     if not 0.05 <= width_atr <= 3.0:
