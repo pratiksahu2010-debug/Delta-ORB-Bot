@@ -7,7 +7,7 @@ import math
 
 import pandas as pd
 
-from .indicators import ema, rsi, atr, adx, vwap
+from .momentum import _frame, _indicators
 from .regime import classify_regime
 from .risk import LIVE_TARGET_R_MULTIPLE
 
@@ -28,40 +28,25 @@ def _reject(diagnostics, stage: str, reason: str, values=None):
     return None
 
 
-def evaluate_tpr_setup(frame: pd.DataFrame, adx_min: float = 17.0, diagnostics: dict | None = None) -> dict | None:
-    required = {"timestamp", "open", "high", "low", "close", "volume"}
-    if not required.issubset(frame.columns) or len(frame) < 60:
-        return _reject(diagnostics, "history", "insufficient_or_missing_ohlcv", {"bars": len(frame)})
+def evaluate_tpr_setup(
+    frame: pd.DataFrame,
+    adx_min: float = 17.0,
+    diagnostics: dict | None = None,
+    prepared: bool = False,
+) -> dict | None:
+    """Evaluate TPR using shared vectorized OHLCV validation and indicators.
 
-    f = frame.copy()
-    f["timestamp"] = pd.to_datetime(f["timestamp"], utc=True, errors="coerce")
-    if f["timestamp"].isna().any():
-        return _reject(diagnostics, "data_validation", "invalid_timestamp")
-    f = f.sort_values("timestamp").reset_index(drop=True)
-    if f.timestamp.duplicated().any():
-        return _reject(diagnostics, "data_validation", "duplicate_timestamps")
-    for col in ("open", "high", "low", "close", "volume"):
-        f[col] = pd.to_numeric(f[col], errors="coerce")
-    prices = f[["open", "high", "low", "close", "volume"]]
-    finite_prices = prices.apply(lambda column: column.map(math.isfinite))
-    if prices.isna().any().any() or not finite_prices.all().all():
-        return _reject(diagnostics, "data_validation", "invalid_ohlcv_values")
-    if (f.volume < 0).any() or (f.high < f[["open", "close", "low"]].max(axis=1)).any():
-        return _reject(diagnostics, "data_validation", "invalid_ohlc_structure")
-    if (f.low > f[["open", "close", "high"]].min(axis=1)).any():
-        return _reject(diagnostics, "data_validation", "invalid_ohlc_structure")
-
-    f["ema9"] = ema(f.close, 9)
-    f["ema21"] = ema(f.close, 21)
-    f["rsi"] = rsi(f.close, 14)
-    f["atr"] = atr(f, 14)
-    f["adx"], f["plus_di"], f["minus_di"] = adx(f, 14)
-
-    # Session VWAP is calculated only from the latest UTC date.
-    f["vwap"] = float("nan")
-    latest_session = f["timestamp"].iloc[-1].date()
-    session_mask = f["timestamp"].dt.date == latest_session
-    f.loc[session_mask, "vwap"] = vwap(f.loc[session_mask])
+    The live scanner prepares one enriched frame per completed candle and
+    shares it with every enabled strategy. Standalone callers retain the
+    original validation/preparation behavior.
+    """
+    if prepared:
+        f = frame
+    else:
+        f = _frame(frame, diagnostics)
+        if f is None:
+            return None
+        f = _indicators(f)
 
     c, prev, trend_ref = f.iloc[-1], f.iloc[-2], f.iloc[-4]
     vals = [
