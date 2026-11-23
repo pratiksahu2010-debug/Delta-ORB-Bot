@@ -131,6 +131,7 @@ class SignalEngine:
         self.context_last_bucket: dict[str, int] = {}
         self.context_15m: dict[str, str] = {}
         self.last_candle_fetch_at: dict[str, datetime] = {}
+        self.force_full_candle_refresh: set[str] = set()
         # Explain why each configured symbol is or is not candle-ready.
         self.candle_diagnostics: dict[str, dict] = {
             symbol: {"state": "pending", "reason": "not_fetched", "bars": 0,
@@ -976,7 +977,18 @@ class SignalEngine:
         diagnostic = self.candle_diagnostics.setdefault(symbol, {})
         diagnostic["last_attempt_at"] = attempted_at.isoformat()
         try:
-            bars = await self.rest.candles(symbol, "5m", 120)
+            previous_bars = self.candles.get(symbol)
+            force_full = symbol in self.force_full_candle_refresh
+            if previous_bars and not force_full:
+                # Re-fetch a two-bar overlap to absorb late exchange corrections,
+                # avoiding another 120-bar payload on every polling cycle.
+                since = max(0, int(previous_bars[-1].timestamp.timestamp()) - 600)
+                updates = await self.rest.candles(symbol, "5m", 120, since=since)
+                merged = {bar.timestamp: bar for bar in previous_bars}
+                merged.update({bar.timestamp: bar for bar in updates})
+                bars = sorted(merged.values(), key=lambda bar: bar.timestamp)[-120:]
+            else:
+                bars = await self.rest.candles(symbol, "5m", 120)
         except Exception as exc:
             diagnostic["last_attempt_status"] = "error"
             diagnostic["last_error"] = f"{type(exc).__name__}: {str(exc)[:240]}"
@@ -985,6 +997,7 @@ class SignalEngine:
             else:
                 diagnostic["reason"] = "refresh_failed_using_cached_data"
             raise
+        self.force_full_candle_refresh.discard(symbol)
         diagnostic["last_attempt_status"] = "success"
         diagnostic["last_error"] = None
         diagnostic["last_success_at"] = datetime.now(timezone.utc).isoformat()
@@ -1009,6 +1022,7 @@ class SignalEngine:
         previous_bars = self.candles.get(symbol)
         if previous_bars and latest.timestamp < previous_bars[-1].timestamp:
             diagnostic.update(state="regressed", reason="history_timestamp_regressed")
+            self.force_full_candle_refresh.add(symbol)
             log.warning(
                 "Ignoring regressed 5m history snapshot symbol=%s latest=%s previously_seen=%s",
                 symbol, latest.timestamp.isoformat(), previous_bars[-1].timestamp.isoformat(),
@@ -1025,6 +1039,7 @@ class SignalEngine:
                for previous, current in zip(recent, recent[1:])):
             diagnostic.update(state="gap", reason="missing_5m_intervals")
             self.candles[symbol] = bars
+            self.force_full_candle_refresh.add(symbol)
             self._invalidate_pending_setups_for_symbol(
                 symbol, "invalidated_missing_5m_candle_intervals",
             )
