@@ -210,6 +210,33 @@ def test_rest_candle_request_retries_transient_http_errors(monkeypatch):
     asyncio.run(run())
 
 
+
+def test_rest_candle_request_supports_incremental_start(monkeypatch):
+    import asyncio
+    import httpx
+    from app.market_data import DeltaRestClient
+
+    async def run():
+        client = DeltaRestClient("https://api.india.delta.exchange")
+        request = httpx.Request("GET", "https://api.india.delta.exchange/test")
+        calls = []
+
+        async def fake_get(_path, params=None):
+            calls.append(params)
+            return httpx.Response(200, json={"success": True, "result": []}, request=request)
+
+        monkeypatch.setattr(client.client, "get", fake_get)
+        monkeypatch.setattr("app.market_data.parse_rest_candles", lambda *_args: [])
+        start = int(__import__("time").time()) - 1000
+        assert await client.candles("BTCUSD", "5m", 120, since=start) == []
+        assert calls[0]["start"] == start
+        assert calls[0]["symbol"] == "BTCUSD"
+        assert calls[0]["resolution"] == "5m"
+        await client.close()
+
+    asyncio.run(run())
+
+
 def test_rest_candle_request_does_not_retry_permanent_client_errors(monkeypatch):
     import asyncio
     import httpx
