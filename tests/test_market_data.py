@@ -26,6 +26,28 @@ def test_invalid_resolution_is_not_silently_accepted():
         raise AssertionError("unsupported resolution must fail")
 
 
+
+def test_stream_symbol_index_tracks_subscription_updates():
+    import asyncio
+    from app.market_data import DeltaPublicStream
+
+    received = []
+
+    async def on_quote(symbol, quote, local_received):
+        received.append(symbol)
+
+    stream = DeltaPublicStream(["BTCUSD"], on_quote)
+    stream.set_symbols(["ETHUSD"])
+    asyncio.run(stream._handle_message({
+        "d": [
+            {"sy": "BTCUSD", "bp": "100", "ap": "101", "ts": 1775037882748105},
+            {"sy": "ETHUSD", "bp": "200", "ap": "201", "ts": 1775037882748105},
+        ]
+    }))
+    assert stream.symbol_set == frozenset({"ETHUSD"})
+    assert received == ["ETHUSD"]
+
+
 def test_ob_l1_message_preserves_bid_ask_and_publish_time():
     import asyncio
     from app.market_data import DeltaPublicStream
