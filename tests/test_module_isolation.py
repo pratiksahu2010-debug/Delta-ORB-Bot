@@ -61,3 +61,16 @@ def test_mex_health_strategy_count_counts_only_mex(monkeypatch):
         orb_enabled=True, rb_enabled=True, tpr_enabled=True, mex_enabled=True,
     ))
     assert main._enabled_strategy_count() == 1
+
+
+def test_strategy_enabled_respects_individual_strategy_flags():
+    settings = Settings(bot_module="ORB", orb_enabled=True, rb_enabled=False, tpr_enabled=True)
+    assert settings.strategy_enabled("ORB") is True
+    assert settings.strategy_enabled("RB") is False
+    assert settings.strategy_enabled("TPR") is True
+    assert settings.strategy_enabled("MEX") is False
+
+
+def test_strategy_enabled_respects_mex_flag():
+    settings = Settings(bot_module="MEX", mex_enabled=False)
+    assert settings.strategy_enabled("MEX") is False
