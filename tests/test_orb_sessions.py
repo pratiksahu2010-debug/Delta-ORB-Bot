@@ -53,3 +53,52 @@ def test_missing_or_duplicate_opening_range_candle_is_not_accepted():
 
     exact = pd.DataFrame({"timestamp": [start]})
     assert len(_opening_range_candle(exact, start)) == 1
+
+
+def _orb_test_frame():
+    stamps = pd.date_range("2026-11-22T19:10:00Z", periods=61, freq="5min")
+    return pd.DataFrame({
+        "timestamp": stamps,
+        "open": 100.0,
+        "high": 101.0,
+        "low": 99.0,
+        "close": 100.0,
+        "volume": 100.0,
+    })
+
+
+def _patch_ready_orb_indicators(monkeypatch):
+    import app.momentum as module
+
+    def indicators(frame):
+        result = frame.copy()
+        for name, value in {
+            "atr": 1.0, "plus_di": 20.0, "minus_di": 10.0,
+            "ema20": 101.0, "ema50": 100.0, "rsi": 55.0,
+            "vwap": 99.0, "rvol": 2.0,
+        }.items():
+            result[name] = value
+        return result
+
+    monkeypatch.setattr(module, "_indicators", indicators)
+
+
+def test_evaluate_orb_uses_defined_session_map(monkeypatch):
+    from app.momentum import evaluate_orb
+
+    _patch_ready_orb_indicators(monkeypatch)
+    diagnostics = {}
+    assert evaluate_orb(_orb_test_frame(), diagnostics=diagnostics) is None
+    assert diagnostics["stage"] == "breakout"
+    assert diagnostics["reason"] == "no_close_outside_opening_range"
+
+
+def test_evaluate_orb_rejects_missing_opening_candle(monkeypatch):
+    from app.momentum import evaluate_orb
+
+    _patch_ready_orb_indicators(monkeypatch)
+    frame = _orb_test_frame().drop(index=58).reset_index(drop=True)
+    diagnostics = {}
+    assert evaluate_orb(frame, diagnostics=diagnostics) is None
+    assert diagnostics["stage"] == "opening_range"
+    assert diagnostics["reason"] == "opening_range_candle_missing"
