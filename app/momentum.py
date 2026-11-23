@@ -13,6 +13,24 @@ from .risk import LIVE_TARGET_R_MULTIPLE
 from .indicators import adx, atr, ema, rsi, vwap
 from .candle_quality import directional_candle_quality
 
+SESSIONS = {
+    'asia': ('Asia/Tokyo', '09:00', 120),
+    'london': ('Europe/London', '08:00', 120),
+    'new_york': ('America/New_York', '09:30', 120),
+}
+
+def _session_window(stamp, session):
+    zone_name, open_time, active_minutes = session
+    zone = ZoneInfo(zone_name)
+    local = stamp.astimezone(zone)
+    start = datetime.combine(local.date(), time.fromisoformat(open_time), tzinfo=zone)
+    range_end = start + timedelta(minutes=5)
+    return start, range_end, range_end + timedelta(minutes=int(active_minutes))
+
+def _opening_range_candle(frame, start_utc):
+    matches = frame[frame.timestamp == pd.Timestamp(start_utc)]
+    return matches if len(matches) == 1 else None
+
 def _reject(diagnostics, stage: str, reason: str, values=None):
     if diagnostics is not None:
         diagnostics.clear()
@@ -117,7 +135,7 @@ def _base_result(f, side, strategy, reason, trigger_price, reference, atr_value,
 
 
 def evaluate_orb(frame, *, adx_min=None, min_rvol=1.10,
-                 enabled_sessions=("asia", "london", "new_york"), diagnostics=None):
+                 enabled_sessions=("asia", "london", "new_york"), sessions=None, diagnostics=None):
     """Detect a completed 5m close beyond a valid session opening range."""
     f = _frame(frame, diagnostics)
     if f is None:
@@ -130,15 +148,12 @@ def evaluate_orb(frame, *, adx_min=None, min_rvol=1.10,
         return _reject(diagnostics, "indicators", "indicator_warmup_or_invalid", {"atr": c.atr, "rvol": c.rvol})
     stamp = c.timestamp.to_pydatetime()
     candidates = []
+    session_map = SESSIONS if sessions is None else sessions
     for name in enabled_sessions:
-        if name not in SESSIONS:
+        if name not in session_map:
             continue
-        zone_name, open_time, active_minutes = SESSIONS[name]
-        zone = ZoneInfo(zone_name)
-        local = stamp.astimezone(zone)
-        start = datetime.combine(local.date(), open_time, tzinfo=zone)
-        range_end = start + timedelta(minutes=5)
-        expiry = range_end + timedelta(minutes=active_minutes)
+        zone_name, open_time, active_minutes = session_map[name]
+        start, range_end, expiry = _session_window(stamp, session_map[name])
         if not (range_end <= stamp < expiry):
             continue
         candidates.append((start, name, zone_name, range_end, expiry))
@@ -146,8 +161,8 @@ def evaluate_orb(frame, *, adx_min=None, min_rvol=1.10,
         return _reject(diagnostics, "session", "outside_enabled_orb_session", {"enabled_sessions": list(enabled_sessions)})
     start, name, zone_name, range_end, expiry = max(candidates, key=lambda x: x[0])
     start_utc = start.astimezone(timezone.utc)
-    opening = f[f.timestamp == pd.Timestamp(start_utc)]
-    if len(opening) != 1:
+    opening = _opening_range_candle(f, start_utc)
+    if opening is None:
         return _reject(diagnostics, "opening_range", "opening_range_candle_missing", {"session": name, "opening_candle_matches": len(opening)})
     rh, rl = float(opening.high.iloc[0]), float(opening.low.iloc[0])
     width_atr = (rh - rl) / float(c.atr)
