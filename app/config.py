@@ -19,6 +19,8 @@ class Settings(BaseSettings):
     bot_module: str = "ORB"
     advika_enabled: bool = True
     advika_dead_hours_ist: str = ""
+    advika_min_relative_volume: float = Field(default=1.2, ge=1.0, le=5.0)
+    advika_min_score: int = Field(default=75, ge=50, le=100)
     log_level: str = "INFO"
     signal_only: bool = True
     orders_enabled: bool = False
