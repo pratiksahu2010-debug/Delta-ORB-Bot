@@ -112,7 +112,8 @@ def _btc_above_ema50(frame: pd.DataFrame | None, candle_time: pd.Timestamp) -> b
 
 def evaluate_advika_choice(
     frame: pd.DataFrame, *, symbol: str, btc_frame: pd.DataFrame | None = None,
-    dead_hours_ist: str = "", diagnostics: dict | None = None,
+    dead_hours_ist: str = "", min_relative_volume: float = 1.2,
+    min_score: int = 75, diagnostics: dict | None = None,
 ) -> dict | None:
     """Evaluate one symbol's newest fully closed 5m candle."""
     data = _prepare(frame)
@@ -137,11 +138,14 @@ def evaluate_advika_choice(
         pd.isna(previous[k]) for k in ("rsi14", "macd", "macd_signal", "macd_hist")
     ):
         return _reject(diagnostics, "indicator_warmup_or_invalid")
-    if current.adx14 <= 25:
-        return _reject(diagnostics, "adx_not_above_25", {"adx": current.adx14})
-    if current.volume_avg20 <= 0 or current.volume < 1.5 * current.volume_avg20:
-        return _reject(diagnostics, "signal_volume_below_1_5x", {
+    if not math.isfinite(float(min_relative_volume)) or min_relative_volume < 1.0:
+        return _reject(diagnostics, "invalid_min_relative_volume_configuration")
+    if not 50 <= int(min_score) <= 100:
+        return _reject(diagnostics, "invalid_min_score_configuration")
+    if current.volume_avg20 <= 0 or current.volume < min_relative_volume * current.volume_avg20:
+        return _reject(diagnostics, "signal_volume_below_minimum", {
             "volume": current.volume, "average_volume_20": current.volume_avg20,
+            "minimum_relative_volume": min_relative_volume,
         })
     if current.atr14 <= 0 or not math.isfinite(float(current.atr14)):
         return _reject(diagnostics, "invalid_atr")
@@ -153,22 +157,18 @@ def evaluate_advika_choice(
         and pullback_low <= current.ema50 < current.close
         and previous.macd <= previous.macd_signal and current.macd > current.macd_signal
         and current.macd < 0 and previous.macd_hist <= 0 < current.macd_hist
-        and 40 <= previous.rsi14 <= 50 and current.rsi14 > previous.rsi14
-        and current.close > current.open
     )
     short_ok = (
         current.close < current.ema200 and current.ema50 < current.ema200
         and pullback_high >= current.ema50 > current.close
         and previous.macd >= previous.macd_signal and current.macd < current.macd_signal
         and current.macd > 0 and previous.macd_hist >= 0 > current.macd_hist
-        and 50 <= previous.rsi14 <= 60 and current.rsi14 < previous.rsi14
-        and current.close < current.open
     )
     side = "LONG" if long_ok else "SHORT" if short_ok else None
     if side is None:
-        return _reject(diagnostics, "entry_conditions_not_met", {
-            "adx": current.adx14, "ema50": current.ema50, "ema200": current.ema200,
-            "rsi": current.rsi14, "macd": current.macd, "macd_signal": current.macd_signal,
+        return _reject(diagnostics, "mandatory_trend_or_macd_gate_failed", {
+            "ema50": current.ema50, "ema200": current.ema200,
+            "macd": current.macd, "macd_signal": current.macd_signal,
             "macd_hist": current.macd_hist, "relative_volume": current.volume / current.volume_avg20,
         })
     if side == "LONG" and symbol.upper() != "BTCUSD" and not _btc_above_ema50(btc_frame, current.timestamp):
@@ -180,6 +180,40 @@ def evaluate_advika_choice(
     if not math.isfinite(risk) or risk <= 0:
         return _reject(diagnostics, "invalid_pullback_stop_distance")
     target = entry + 1.5 * risk if side == "LONG" else entry - 1.5 * risk
+    relative_volume = float(current.volume / current.volume_avg20)
+    # Four hard gates: aligned EMA200 trend, directional MACD cross,
+    # relative volume threshold, and a valid stop/1.5R reward calculation.
+    # RSI, EMA50 pullback proximity, ADX and candle quality are scored, not gates.
+    trend_points = 20
+    macd_points = 20
+    rvol_points = 10 if relative_volume < 1.5 else 12 if relative_volume < 2.0 else 15
+    rr_points = 10
+    if side == "LONG":
+        rsi_points = 15 if 40 <= previous.rsi14 <= 50 and current.rsi14 > previous.rsi14 else (
+            8 if current.rsi14 > previous.rsi14 else 0
+        )
+        pullback_distance = max(0.0, float(pullback_low - current.ema50))
+        candle_close_position = (current.close - current.low) / max(float(current.high - current.low), 1e-12)
+    else:
+        rsi_points = 15 if 50 <= previous.rsi14 <= 60 and current.rsi14 < previous.rsi14 else (
+            8 if current.rsi14 < previous.rsi14 else 0
+        )
+        pullback_distance = max(0.0, float(current.ema50 - pullback_high))
+        candle_close_position = (current.high - current.close) / max(float(current.high - current.low), 1e-12)
+    pullback_points = 10 if pullback_distance <= 0.5 * atr_value else 6 if pullback_distance <= atr_value else 0
+    adx_value = float(current.adx14)
+    adx_points = 0 if adx_value < 15 else 1 if adx_value < 20 else 3 if adx_value <= 25 else 5
+    body_ratio = abs(float(current.close - current.open)) / max(float(current.high - current.low), 1e-12)
+    candle_points = 5 if body_ratio >= 0.5 and candle_close_position >= 0.75 else (
+        3 if body_ratio >= 0.3 and candle_close_position >= 0.6 else 0
+    )
+    score = int(trend_points + macd_points + rvol_points + rr_points +
+                rsi_points + pullback_points + adx_points + candle_points)
+    if score < int(min_score):
+        return _reject(diagnostics, "advika_score_below_minimum", {
+            "score": score, "minimum_score": int(min_score), "adx": adx_value,
+            "relative_volume": relative_volume,
+        })
     result = {
         "side": side, "entry_reference": entry, "trigger_price": entry,
         "stop_loss": stop, "take_profit_1": target, "atr": atr_value,
@@ -187,12 +221,19 @@ def evaluate_advika_choice(
         "position_size_formula": "equity * 0.01 / abs(entry - stop)",
         "partial_exit_percent": 50, "trailing_stop": "EMA20 on each completed 5m candle",
         "early_exit": "close remainder if MACD crosses back or histogram magnitude shrinks for 3 consecutive bars",
-        "reason": f"Advika Choice {side}: EMA200 trend, EMA50 pullback, MACD(12,26,9) cross, RSI(14) turn, ADX>25, volume>=1.5x",
+        "reason": f"Advika Choice {side}: EMA200 trend + MACD(12,26,9) cross + relative volume {relative_volume:.2f}x; quality {score}/100",
         "setup_time": current.timestamp.isoformat(), "candle_close_time": close_time.isoformat(),
         "ema20": float(current.ema20), "macd": float(current.macd),
         "macd_signal": float(current.macd_signal), "macd_histogram": float(current.macd_hist),
         "adx": float(current.adx14), "rsi": float(current.rsi14),
-        "relative_volume": float(current.volume / current.volume_avg20),
+        "relative_volume": relative_volume,
+        "quality_score": score, "minimum_quality_score": int(min_score),
+        "quality_score_breakdown": {
+            "trend": trend_points, "macd": macd_points, "relative_volume": rvol_points,
+            "risk_reward": rr_points, "rsi_reversal": rsi_points,
+            "ema50_pullback_quality": pullback_points, "adx_strength": adx_points,
+            "signal_candle": candle_points,
+        },
         "pullback_extreme": pullback_low if side == "LONG" else pullback_high,
     }
     if diagnostics is not None:
