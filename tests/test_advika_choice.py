@@ -311,3 +311,37 @@ def test_advika_short_pullback_continuation_setup(monkeypatch):
     assert result is not None
     assert result["side"] == "SHORT"
     assert result["setup_type"] == "MACD_PULLBACK_CONTINUATION"
+
+
+def test_advika_accepts_exact_rvol_threshold(monkeypatch):
+    _mock_indicators(monkeypatch, "LONG")
+    original = advika._with_indicators
+
+    def threshold_volume(frame):
+        data = original(frame)
+        data.loc[data.index[-1], "volume"] = 120.0
+        return data
+
+    monkeypatch.setattr(advika, "_with_indicators", threshold_volume)
+    result = advika.evaluate_advika_choice(
+        _bars(), symbol="BTCUSD", min_score=50,
+    )
+    assert result is not None
+    assert result["relative_volume"] == 1.2
+
+
+def test_advika_ema50_is_quality_score_not_entry_gate(monkeypatch):
+    _mock_indicators(monkeypatch, "LONG")
+    original = advika._with_indicators
+
+    def distant_ema50(frame):
+        data = original(frame)
+        data.loc[data.index[-1], "ema50"] = 130.0
+        return data
+
+    monkeypatch.setattr(advika, "_with_indicators", distant_ema50)
+    result = advika.evaluate_advika_choice(
+        _bars(), symbol="BTCUSD", min_score=50,
+    )
+    assert result is not None
+    assert result["quality_score_breakdown"]["ema50_pullback_quality"] == 0
