@@ -325,6 +325,8 @@ async def status():
         "pending_by_setup_type": data.get("pending_by_setup_type", {}),
         "telegram_delivery": data.get("telegram_delivery", {}),
         "advika_signal_delivery": data.get("advika_signal_delivery", {}),
+        "advika_management_delivery": data.get("advika_management_delivery", {}),
+        "advika_positions": data.get("advika_positions", {}),
         "telegram_outbox": data.get("telegram_outbox"),
         "shadow_ml": shadow_ml,
         "signal_journal": journal_counts,
