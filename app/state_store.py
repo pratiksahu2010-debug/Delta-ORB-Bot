@@ -350,11 +350,12 @@ class SignalStore:
 
     def activate_delivered_advika_positions(self) -> int:
         """Activate paper positions only after Telegram accepted their entry alert."""
+        placeholder = "?" if self.backend == "sqlite" else "%s"
         with self._connect() as db:
             cur = db.execute(
-                """UPDATE advika_positions SET status='open',updated_at=?
-                   WHERE status='pending'
-                   AND signal_key IN (SELECT signal_key FROM sent_signals)""",
+                f"""UPDATE advika_positions SET status='open',updated_at={placeholder}
+                    WHERE status='pending'
+                    AND signal_key IN (SELECT signal_key FROM sent_signals)""",
                 (_utc_now().isoformat(),),
             )
             return int(cur.rowcount or 0)
