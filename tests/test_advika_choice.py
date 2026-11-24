@@ -209,3 +209,14 @@ def test_advika_exit_honors_active_trailing_stop_after_partial(monkeypatch):
     )
     assert result["action"] == "EXIT_REMAINDER"
     assert result["reason"] == "trailing_stop_touched"
+
+
+def test_advika_partial_target_starts_ema20_trailing_stop(monkeypatch):
+    _mock_indicators(monkeypatch, "LONG")
+    result = advika.evaluate_advika_exit(
+        {"side": "LONG", "stop_loss": 90, "take_profit_1": 110.5,
+         "trailing_stop": 90, "partial_taken": False},
+        _bars(),
+    )
+    assert result["action"] == "TAKE_PARTIAL_50"
+    assert result["trailing_stop"] == 108.0
