@@ -15,8 +15,10 @@ log = logging.getLogger(__name__)
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
     app_env: str = "development"
-    # ALL preserves the combined deployment; MEX and ORB create isolated single-module bots.
+    # ADVIKA is an isolated signal-only module; ALL remains backward-compatible.
     bot_module: str = "ORB"
+    advika_enabled: bool = True
+    advika_dead_hours_ist: str = ""
     log_level: str = "INFO"
     signal_only: bool = True
     orders_enabled: bool = False
@@ -92,9 +94,9 @@ class Settings(BaseSettings):
         mode = str(self.bot_module or "ALL").strip().upper()
         if mode == "ALL":
             return ["ORB", "MEX"]
-        if mode in {"ORB", "MEX"}:
+        if mode in {"ORB", "MEX", "ADVIKA"}:
             return [mode]
-        raise ValueError("BOT_MODULE must be ALL, ORB, or MEX")
+        raise ValueError("BOT_MODULE must be ALL, ORB, MEX, or ADVIKA")
 
     def module_enabled(self, module: str) -> bool:
         return str(module).strip().upper() in self.enabled_modules
@@ -109,6 +111,8 @@ class Settings(BaseSettings):
             return self.module_enabled("ORB") and self.tpr_enabled
         if name == "MEX":
             return self.module_enabled("MEX") and self.mex_enabled
+        if name == "ADVIKA":
+            return self.module_enabled("ADVIKA") and self.advika_enabled
         return False
 
     @property
@@ -191,6 +195,8 @@ class Settings(BaseSettings):
     def validate_safety(self) -> None:
         _ = self.enabled_modules  # validates BOT_MODULE before the engine starts
         _ = self.orb_session_config  # validates ORB session settings
+        from .advika_choice import parse_dead_hours
+        parse_dead_hours(self.advika_dead_hours_ist)
         if not self.signal_only or self.orders_enabled:
             raise ValueError("Unsafe configuration: signal-only must be true and order execution must be disabled")
         float_thresholds = (
