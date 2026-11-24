@@ -154,13 +154,11 @@ def evaluate_advika_choice(
     pullback_high = float(data.high.iloc[-PULLBACK_LOOKBACK_BARS:].max())
     long_ok = (
         current.close > current.ema200 and current.ema50 > current.ema200
-        and pullback_low <= current.ema50 < current.close
         and previous.macd <= previous.macd_signal and current.macd > current.macd_signal
         and current.macd < 0 and previous.macd_hist <= 0 < current.macd_hist
     )
     short_ok = (
         current.close < current.ema200 and current.ema50 < current.ema200
-        and pullback_high >= current.ema50 > current.close
         and previous.macd >= previous.macd_signal and current.macd < current.macd_signal
         and current.macd > 0 and previous.macd_hist >= 0 > current.macd_hist
     )
@@ -192,13 +190,13 @@ def evaluate_advika_choice(
         rsi_points = 15 if 40 <= previous.rsi14 <= 50 and current.rsi14 > previous.rsi14 else (
             8 if current.rsi14 > previous.rsi14 else 0
         )
-        pullback_distance = max(0.0, float(pullback_low - current.ema50))
+        pullback_distance = float((data.low.iloc[-PULLBACK_LOOKBACK_BARS:] - current.ema50).abs().min())
         candle_close_position = (current.close - current.low) / max(float(current.high - current.low), 1e-12)
     else:
         rsi_points = 15 if 50 <= previous.rsi14 <= 60 and current.rsi14 < previous.rsi14 else (
             8 if current.rsi14 < previous.rsi14 else 0
         )
-        pullback_distance = max(0.0, float(current.ema50 - pullback_high))
+        pullback_distance = float((data.high.iloc[-PULLBACK_LOOKBACK_BARS:] - current.ema50).abs().min())
         candle_close_position = (current.high - current.close) / max(float(current.high - current.low), 1e-12)
     pullback_points = 10 if pullback_distance <= 0.5 * atr_value else 6 if pullback_distance <= atr_value else 0
     adx_value = float(current.adx14)
