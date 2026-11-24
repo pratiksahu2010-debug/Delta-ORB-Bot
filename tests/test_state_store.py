@@ -221,6 +221,12 @@ def test_advika_position_state_survives_reopen_and_advances_idempotently(tmp_pat
     assert store.create_advika_position(key, {**position, "entry_price": 999}) is False
 
     reopened = SignalStore(str(path))
+    assert reopened.list_open_advika_positions("BTCUSD") == []
+    assert reopened.advika_position_health()["pending"] == 1
+    reopened.enqueue_alert(key, sample_payload())
+    claim = reopened.claim_due_alerts()[0]
+    assert reopened.mark_sent(key, sample_payload(), claim[2]) is True
+    assert reopened.activate_delivered_advika_positions() == 1
     loaded = reopened.list_open_advika_positions("BTCUSD")
     assert len(loaded) == 1
     assert loaded[0]["entry_price"] == 100.0
@@ -232,7 +238,7 @@ def test_advika_position_state_survives_reopen_and_advances_idempotently(tmp_pat
         key, updated, "partial", "2026-11-24T08:05:00+00:00",
     ) is True
     health = reopened.advika_position_health()
-    assert health == {"open": 0, "partial": 1, "closed": 0, "active": 1}
+    assert health == {"pending": 0, "open": 0, "partial": 1, "closed": 0, "active": 1}
 
     active = reopened.list_open_advika_positions("BTCUSD")
     assert len(active) == 1
@@ -263,6 +269,10 @@ def test_advika_entry_outbox_and_position_are_persisted_atomically(tmp_path):
     assert store.enqueue_advika_signal(key, alert, position) == (True, True)
     assert store.enqueue_advika_signal(key, alert, position) == (False, False)
     assert store.due_alerts() == [(key, alert)]
+    assert store.list_open_advika_positions("BTCUSD") == []
+    claim = store.claim_due_alerts()[0]
+    assert store.mark_sent(key, alert, claim[2]) is True
+    assert store.activate_delivered_advika_positions() == 1
     active = store.list_open_advika_positions("BTCUSD")
     assert len(active) == 1
     assert active[0]["entry_price"] == 100.0
