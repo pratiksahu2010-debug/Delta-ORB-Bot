@@ -200,11 +200,14 @@ class SignalEngine:
             log.info("Shadow ML disabled by lightweight runtime profile")
         self.delivery_retry_at: dict[str, datetime] = {}
         self.outbox_lock = asyncio.Lock()
+        self.outbox_task: asyncio.Task | None = None
 
     async def close(self) -> None:
         """Drain non-blocking shadow capture tasks and release the Delta REST client."""
         if self.shadow_ml_tasks:
             await asyncio.gather(*tuple(self.shadow_ml_tasks), return_exceptions=True)
+        if self.outbox_task is not None and not self.outbox_task.done():
+            await asyncio.gather(self.outbox_task, return_exceptions=True)
         await self.rest.close()
         close_notifier = getattr(self.notifier, "close", None)
         if close_notifier is not None:
@@ -888,8 +891,16 @@ class SignalEngine:
             )
             self.sent_keys.add(key)
         else:
-            await self.deliver_outbox()
+            self.schedule_outbox_delivery()
         self._remove_pending_setup(symbol, strategy, setup)
+
+    def schedule_outbox_delivery(self) -> None:
+        """Start durable Telegram delivery without blocking scanner callbacks."""
+        if self.outbox_task is not None and not self.outbox_task.done():
+            return
+        self.outbox_task = asyncio.create_task(
+            self.deliver_outbox(), name="telegram-outbox-delivery",
+        )
 
     async def deliver_outbox(self) -> None:
         """Deliver durable alert intents; retries survive process restarts."""
@@ -1488,7 +1499,7 @@ class SignalEngine:
                 )
         # Drain the outbox only when this candle created a management alert.
         if queued_management_alert:
-            await self.deliver_outbox()
+            self.schedule_outbox_delivery()
 
     async def _queue_completed_candle_signal(self, symbol: str, latest: Candle, result: dict) -> None:
         """Queue Advika's close-confirmed signal without the legacy quote trigger."""
@@ -1554,7 +1565,7 @@ class SignalEngine:
                 symbol, result["side"], result["entry_reference"],
                 result["stop_loss"], result["take_profit_1"],
             )
-            await self.deliver_outbox()
+            self.schedule_outbox_delivery()
         except Exception:
             log.exception("Advika Choice signal queue failed symbol=%s candle=%s", symbol, candle_time)
 
@@ -1763,7 +1774,7 @@ class SignalEngine:
                             evaluations, armed, rejection_top, gate_counts, rejection_samples,
                             self.stream.candle_volume_diagnostics(),
                         )
-                await self.deliver_outbox()
+                self.schedule_outbox_delivery()
                 await asyncio.sleep(10)
         finally:
             for task in (stream_task, context_task, quote_task):
