@@ -1441,7 +1441,7 @@ class SignalEngine:
                     # are idempotent per candle and emitted only after a material
                     # tightening of at least 0.25 ATR (or 0.01% of price).
                     management_key = (
-                        f"{signal_key}:management:{notify_action}:{candle_time}"
+                        f"{signal_key}:management:{notify_action}:{round(float(position.get('trailing_stop', 0)), 8)}"
                         if notify_action == "UPDATE_TRAILING_STOP"
                         else f"{signal_key}:management:{notify_action}"
                     )
