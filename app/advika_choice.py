@@ -260,13 +260,23 @@ def evaluate_advika_exit(position: dict, frame: pd.DataFrame) -> dict | None:
     stop = float(position.get("stop_loss", 0) or 0)
     target = float(position.get("take_profit_1", 0) or 0)
     partial_taken = bool(position.get("partial_taken", False))
+    trailing = float(position.get("trailing_stop", stop) or stop)
+    effective_stop = (
+        max(stop, trailing) if side == "LONG" else min(stop, trailing)
+    )
     # A completed candle touching both stop and target is treated conservatively
-    # as a stop-out because intrabar event order cannot be reconstructed.
+    # as a stop-out because intrabar event order cannot be reconstructed. After
+    # the partial target, the more protective EMA20 trail is an active stop.
     stop_hit = (
-        stop > 0 and (current.low <= stop if side == "LONG" else current.high >= stop)
+        effective_stop > 0
+        and (current.low <= effective_stop if side == "LONG" else current.high >= effective_stop)
     )
     if stop_hit:
-        return {"action": "EXIT_REMAINDER", "reason": "stop_loss_touched",
+        reason = (
+            "trailing_stop_touched"
+            if partial_taken and effective_stop != stop else "stop_loss_touched"
+        )
+        return {"action": "EXIT_REMAINDER", "reason": reason,
                 "candle_time": candle_time}
     target_hit = (
         target > 0 and (current.high >= target if side == "LONG" else current.low <= target)

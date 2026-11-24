@@ -198,3 +198,14 @@ def test_advika_settings_default_to_recommended_thresholds():
     settings = Settings(bot_module="ADVIKA")
     assert settings.advika_min_relative_volume == 1.2
     assert settings.advika_min_score == 75
+
+
+def test_advika_exit_honors_active_trailing_stop_after_partial(monkeypatch):
+    _mock_indicators(monkeypatch, "LONG")
+    result = advika.evaluate_advika_exit(
+        {"side": "LONG", "stop_loss": 90, "take_profit_1": 120,
+         "trailing_stop": 105, "partial_taken": True},
+        _bars(),
+    )
+    assert result["action"] == "EXIT_REMAINDER"
+    assert result["reason"] == "trailing_stop_touched"

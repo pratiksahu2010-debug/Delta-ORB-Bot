@@ -1610,3 +1610,36 @@ def test_live_candle_cache_is_bounded_and_unknown_symbols_are_ignored(tmp_path):
 
     from app.advika_choice import HISTORY_BARS as ADVIKA_HISTORY_BARS
     asyncio.run(run())
+
+
+def test_empty_incremental_candle_response_keeps_fresh_cache_without_full_refetch(tmp_path, monkeypatch):
+    async def run():
+        engine, _notifier = make_engine(tmp_path)
+        now = datetime.now(timezone.utc).replace(second=0, microsecond=0)
+        latest = now.replace(minute=(now.minute // 5) * 5) - timedelta(minutes=5)
+        bars = [
+            Candle(
+                timestamp=latest - timedelta(minutes=5 * (119 - index)),
+                open=100.0, high=101.0, low=99.0, close=100.5, volume=10.0,
+            )
+            for index in range(120)
+        ]
+        engine.candles["BTCUSD"] = bars
+        engine.last_evaluated["BTCUSD"] = latest
+        calls = []
+
+        async def empty_incremental(symbol, timeframe, limit, *, since=None):
+            calls.append({"symbol": symbol, "timeframe": timeframe, "limit": limit, "since": since})
+            assert since is not None
+            return []
+
+        monkeypatch.setattr(engine.rest, "candles", empty_incremental)
+        await engine.refresh_symbol("BTCUSD")
+
+        assert len(calls) == 1
+        assert engine.candles["BTCUSD"] == bars
+        assert "BTCUSD" not in engine.force_full_candle_refresh
+        assert engine.candle_diagnostics["BTCUSD"]["state"] == "ready"
+        await engine.rest.close()
+
+    asyncio.run(run())
