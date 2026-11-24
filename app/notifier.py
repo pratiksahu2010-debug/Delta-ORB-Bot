@@ -65,7 +65,7 @@ class TelegramNotifier:
                 TelegramNotifier.tradingview_chart_url(signal.get("symbol", "")),
                 quote=True,
             )
-            return "\\n".join([
+            return "\n".join([
                 f"⚠️ <b>{symbol} | Advika Choice</b>",
                 f"<b>{html.escape(action_label)}</b>",
                 f"<b>Side: {side}</b>",
