@@ -103,7 +103,6 @@ class Settings(BaseSettings):
         if self.advika_enabled:
             modules.append("ADVIKA")
         return modules
-        raise ValueError("BOT_MODULE must be ALL, ORB, MEX, or ADVIKA")
 
     def module_enabled(self, module: str) -> bool:
         name = str(module).strip().upper()
