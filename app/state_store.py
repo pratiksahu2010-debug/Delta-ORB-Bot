@@ -89,14 +89,14 @@ class SignalStore:
                 VALUES (?,?,'pending',0,?,?,?)"""
             position_sql = """INSERT OR IGNORE INTO advika_positions
                 (signal_key,symbol,status,position_json,last_processed_candle,created_at,updated_at)
-                VALUES (?,?,'open',?,?,?,?)"""
+                VALUES (?,?,'pending',?,?,?,?)"""
         else:
             outbox_sql = """INSERT INTO alert_outbox
                 (signal_key,payload_json,status,attempts,created_at,next_attempt_at,updated_at)
                 VALUES (%s,%s,'pending',0,%s,%s,%s) ON CONFLICT(signal_key) DO NOTHING"""
             position_sql = """INSERT INTO advika_positions
                 (signal_key,symbol,status,position_json,last_processed_candle,created_at,updated_at)
-                VALUES (%s,%s,'open',%s,%s,%s,%s) ON CONFLICT(signal_key) DO NOTHING"""
+                VALUES (%s,%s,'pending',%s,%s,%s,%s) ON CONFLICT(signal_key) DO NOTHING"""
         with self._connect() as db:
             outbox_cur = db.execute(
                 outbox_sql, (signal_key, encoded_alert, now, now, now),
@@ -313,11 +313,11 @@ class SignalStore:
         if self.backend == "sqlite":
             sql = """INSERT OR IGNORE INTO advika_positions
                      (signal_key,symbol,status,position_json,last_processed_candle,created_at,updated_at)
-                     VALUES (?,?, 'open', ?, ?, ?, ?)"""
+                     VALUES (?,?, 'pending', ?, ?, ?, ?)"""
         else:
             sql = """INSERT INTO advika_positions
                      (signal_key,symbol,status,position_json,last_processed_candle,created_at,updated_at)
-                     VALUES (%s,%s,'open',%s,%s,%s,%s)
+                     VALUES (%s,%s,'pending',%s,%s,%s,%s)
                      ON CONFLICT(signal_key) DO NOTHING"""
         with self._connect() as db:
             cur = db.execute(sql, (
@@ -368,6 +368,17 @@ class SignalStore:
             )
             return cur.rowcount == 1
 
+    def activate_delivered_advika_positions(self) -> int:
+        """Activate paper positions only after Telegram accepted their entry alert."""
+        with self._connect() as db:
+            cur = db.execute(
+                """UPDATE advika_positions SET status='open',updated_at=?
+                   WHERE status='pending'
+                   AND signal_key IN (SELECT signal_key FROM sent_signals)""",
+                (_utc_now().isoformat(),),
+            )
+            return int(cur.rowcount or 0)
+
     def advika_position_health(self) -> dict:
         with self._connect() as db:
             rows = db.execute(
@@ -375,6 +386,7 @@ class SignalStore:
             ).fetchall()
         counts = {str(status): int(count or 0) for status, count in rows}
         return {
+            "pending": counts.get("pending", 0),
             "open": counts.get("open", 0),
             "partial": counts.get("partial", 0),
             "closed": counts.get("closed", 0),
