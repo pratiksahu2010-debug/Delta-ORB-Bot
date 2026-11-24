@@ -1567,3 +1567,46 @@ def test_large_symbol_universe_fails_closed_if_ticker_snapshot_incomplete(tmp_pa
         assert engine.symbol_validation["status"] == "error"
         await engine.rest.close()
     asyncio.run(run())
+
+
+def test_engine_subscribes_to_delta_completed_candle_channel(tmp_path):
+    engine, _notifier = make_engine(tmp_path)
+    assert engine.stream.on_candle == engine.on_candle
+    assert "candlestick_5m" in engine.stream.required_channels
+    asyncio.run(engine.rest.close())
+
+
+def test_live_candles_only_merge_after_their_five_minute_bucket_closes(tmp_path):
+    engine, _notifier = make_engine(tmp_path)
+    now = datetime.now(timezone.utc)
+    closed_at = now - timedelta(minutes=10)
+    forming_at = now - timedelta(minutes=2)
+    closed = Candle(closed_at, 100, 102, 99, 101, 15)
+    forming = Candle(forming_at, 101, 103, 100, 102, 8)
+
+    async def run():
+        await engine.on_candle("BTCUSD", closed, now)
+        await engine.on_candle("BTCUSD", forming, now)
+        merged = engine._merge_closed_live_candles("BTCUSD", [], 240)
+        assert [bar.timestamp for bar in merged] == [closed_at]
+        assert merged[0].volume == 15
+        await engine.rest.close()
+
+    asyncio.run(run())
+
+
+def test_live_candle_cache_is_bounded_and_unknown_symbols_are_ignored(tmp_path):
+    engine, _notifier = make_engine(tmp_path)
+    now = datetime.now(timezone.utc)
+
+    async def run():
+        await engine.on_candle("UNKNOWNUSD", Candle(now, 100, 101, 99, 100, 1), now)
+        assert "UNKNOWNUSD" not in engine.live_candles
+        for index in range(ADVIKA_HISTORY_BARS + 61):
+            stamp = now - timedelta(minutes=5 * (ADVIKA_HISTORY_BARS + 61 - index))
+            await engine.on_candle("BTCUSD", Candle(stamp, 100, 101, 99, 100, 1), now)
+        assert len(engine.live_candles["BTCUSD"]) == ADVIKA_HISTORY_BARS + 60
+        await engine.rest.close()
+
+    from app.advika_choice import HISTORY_BARS as ADVIKA_HISTORY_BARS
+    asyncio.run(run())
