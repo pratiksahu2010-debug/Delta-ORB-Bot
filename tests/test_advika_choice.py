@@ -119,3 +119,31 @@ def test_advika_can_be_disabled_without_disabling_other_modules():
     assert settings.enabled_modules == ["ORB"]
     assert not settings.strategy_enabled("ADVIKA")
     assert settings.strategy_enabled("ORB")
+
+
+def test_advika_waits_for_partial_target_before_trailing(monkeypatch):
+    _mock_indicators(monkeypatch, "LONG")
+    result = advika.evaluate_advika_exit(
+        {"side": "LONG", "stop_loss": 90, "take_profit_1": 120, "trailing_stop": 90},
+        _bars(),
+    )
+    assert result["action"] == "HOLD"
+    assert result["reason"] == "waiting_for_1_5r_partial_target"
+
+
+def test_advika_trailing_stop_is_monotonic_after_partial(monkeypatch):
+    def prepare(frame):
+        data = frame.copy()
+        data["ema20"] = 95.0
+        data["macd"] = -0.05
+        data["macd_signal"] = -0.1
+        data["macd_hist"] = np.linspace(0.1, 0.4, len(data))
+        return data
+    monkeypatch.setattr(advika, "_with_indicators", prepare)
+    result = advika.evaluate_advika_exit(
+        {"side": "LONG", "stop_loss": 90, "take_profit_1": 120,
+         "trailing_stop": 100, "partial_taken": True},
+        _bars(),
+    )
+    assert result["action"] == "UPDATE_TRAILING_STOP"
+    assert result["trailing_stop"] == 100
