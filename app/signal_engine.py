@@ -1438,7 +1438,7 @@ class SignalEngine:
                 if notify_action:
                     current_price = float(frame.iloc[-1]["close"])
                     # Partial/final exits are one-per-position; trail updates
-                    # are idempotent per candle and emitted only after a material
+                    # are idempotent per stop price and emitted only after a material
                     # tightening of at least 0.25 ATR (or 0.01% of price).
                     management_key = (
                         f"{signal_key}:management:{notify_action}:{round(float(position.get('trailing_stop', 0)), 8)}"
