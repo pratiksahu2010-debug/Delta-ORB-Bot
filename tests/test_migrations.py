@@ -106,6 +106,7 @@ def test_versioned_migrations_adopt_legacy_sqlite_tables_without_data_loss(tmp_p
         (8, "create_durable_signal_outcomes"),
         (9, "create_point_in_time_shadow_ml_tables"),
         (10, "add_canonical_neon_storage_schema"),
+        (11, "create_advika_signal_only_positions"),
     ]
     assert "lease_until" in outbox_columns
     assert "trigger_confirmed_at" in journal_columns
@@ -129,7 +130,7 @@ def test_versioned_migrations_adopt_legacy_sqlite_tables_without_data_loss(tmp_p
     SignalStore(str(path))
     SignalJournal(str(path))
     with sqlite3.connect(path) as db:
-        assert db.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0] == 10
+        assert db.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0] == 11
 
 
 
@@ -190,7 +191,7 @@ def test_concurrent_sqlite_startup_applies_each_migration_once(tmp_path):
         versions = db.execute(
             "SELECT version FROM schema_migrations ORDER BY version"
         ).fetchall()
-        assert versions == [(1,), (2,), (3,), (4,), (5,), (6,), (7,), (8,), (9,), (10,)]
+        assert versions == [(1,), (2,), (3,), (4,), (5,), (6,), (7,), (8,), (9,), (10,), (11,)]
         assert db.execute(
             "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='setup_lifecycle_events'"
         ).fetchone()[0] == 1
