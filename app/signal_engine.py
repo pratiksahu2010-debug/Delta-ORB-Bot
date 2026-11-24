@@ -170,6 +170,10 @@ class SignalEngine:
             "queued": 0, "sent": 0, "failed": 0,
             "last_queued_at": None, "last_sent_at": None, "last_error_at": None,
         }
+        self.advika_management_delivery = {
+            "queued": 0, "sent": 0, "failed": 0,
+            "last_queued_at": None, "last_sent_at": None, "last_error_at": None,
+        }
         self.pending_restore = {"restored": 0, "expired": 0, "invalid": 0, "last_restore_at": None}
         # Momentum-family detectors and the combined TPR+RB module keep independent setup lifecycles.
         self.momentum_pending: dict[tuple[str, str], PendingSetup] = {}
@@ -909,8 +913,13 @@ class SignalEngine:
                     if not delivered:
                         self.telegram_delivery["failed"] += 1
                         if str(alert.get("strategy", "")).upper() == "ADVIKA":
-                            self.advika_signal_delivery["failed"] += 1
-                            self.advika_signal_delivery["last_error_at"] = datetime.now(timezone.utc).isoformat()
+                            counter = (
+                                self.advika_management_delivery
+                                if alert.get("alert_type") == "advika_management"
+                                else self.advika_signal_delivery
+                            )
+                            counter["failed"] += 1
+                            counter["last_error_at"] = datetime.now(timezone.utc).isoformat()
                         self.store.schedule_retry(key, lease_token, 60, str(delivery.get("error") or "notifier returned false"))
                         log.warning("Telegram delivery failed key=%s status=%s", key, self.telegram_delivery["last_status"])
                         continue
@@ -956,15 +965,25 @@ class SignalEngine:
                     self.telegram_delivery["sent"] += 1
                     self.telegram_delivery["last_success_at"] = datetime.now(timezone.utc).isoformat()
                     if str(alert.get("strategy", "")).upper() == "ADVIKA":
-                        self.advika_signal_delivery["sent"] += 1
-                        self.advika_signal_delivery["last_sent_at"] = self.telegram_delivery["last_success_at"]
+                        counter = (
+                            self.advika_management_delivery
+                            if alert.get("alert_type") == "advika_management"
+                            else self.advika_signal_delivery
+                        )
+                        counter["sent"] += 1
+                        counter["last_sent_at"] = self.telegram_delivery["last_success_at"]
                     self.telegram_delivery["last_error"] = None
                     log.info("Durable Telegram alert delivered key=%s http_status=%s", key, self.telegram_delivery["last_http_status"])
                 except Exception as exc:
                     self.telegram_delivery["failed"] += 1
                     if str(alert.get("strategy", "")).upper() == "ADVIKA":
-                        self.advika_signal_delivery["failed"] += 1
-                        self.advika_signal_delivery["last_error_at"] = datetime.now(timezone.utc).isoformat()
+                        counter = (
+                            self.advika_management_delivery
+                            if alert.get("alert_type") == "advika_management"
+                            else self.advika_signal_delivery
+                        )
+                        counter["failed"] += 1
+                        counter["last_error_at"] = datetime.now(timezone.utc).isoformat()
                     safe_error = f"delivery_exception:{type(exc).__name__}"
                     self.telegram_delivery["last_status"] = "failed"
                     self.telegram_delivery["last_error"] = safe_error
@@ -1364,6 +1383,7 @@ class SignalEngine:
             log.exception("Unable to load Advika paper positions symbol=%s", symbol)
             return
         candle_time = latest.timestamp.isoformat()
+        queued_management_alert = False
         for position in positions:
             signal_key = str(position.get("signal_key", ""))
             last_processed = str(position.get("last_processed_candle", ""))
@@ -1409,6 +1429,9 @@ class SignalEngine:
                         "candle_time": candle_time,
                         "partial_exit_percent": 50,
                     })
+                    queued_management_alert = True
+                    self.advika_management_delivery["queued"] += 1
+                    self.advika_management_delivery["last_queued_at"] = datetime.now(timezone.utc).isoformat()
                 self.store.update_advika_position(
                     signal_key, position, status, candle_time,
                 )
@@ -1417,8 +1440,9 @@ class SignalEngine:
                     "Advika position management failed symbol=%s signal_key=%s candle=%s",
                     symbol, signal_key, candle_time,
                 )
-        # Management alerts share the durable outbox and retry/dedupe path.
-        await self.deliver_outbox()
+        # Drain the outbox only when this candle created a management alert.
+        if queued_management_alert:
+            await self.deliver_outbox()
 
     async def _queue_completed_candle_signal(self, symbol: str, latest: Candle, result: dict) -> None:
         """Queue Advika's close-confirmed signal without the legacy quote trigger."""
@@ -1878,6 +1902,7 @@ class SignalEngine:
             "strategy_diagnostics": module_diagnostics,
             "telegram_delivery": dict(self.telegram_delivery),
             "advika_signal_delivery": dict(self.advika_signal_delivery),
+            "advika_management_delivery": dict(self.advika_management_delivery),
             "advika_positions": self.store.advika_position_health(),
             "pending_setups": len(self.pending) + len(self.momentum_pending),
             "persisted_pending_setups": self.store.pending_setup_count() if state_store_ok else None,
