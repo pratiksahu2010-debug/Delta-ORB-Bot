@@ -68,6 +68,9 @@ def _prepare(frame: pd.DataFrame) -> pd.DataFrame | None:
     if data.timestamp.duplicated().any():
         return None
     data = data.sort_values("timestamp").reset_index(drop=True)
+    if ((data.high < data[["open", "close", "low"]].max(axis=1)).any()
+            or (data.low > data[["open", "close", "high"]].min(axis=1)).any()):
+        return None
     stamps = data.timestamp.tolist()
     if any((b - a).total_seconds() != BAR_SECONDS for a, b in zip(stamps, stamps[1:])):
         return None
@@ -196,7 +199,7 @@ def evaluate_advika_choice(
 
 
 def evaluate_advika_exit(position: dict, frame: pd.DataFrame) -> dict | None:
-    """Return a paper-management instruction using completed 5m bars only."""
+    """Return closed-candle paper-management instructions; never submits orders."""
     data = _prepare(frame)
     if data is None:
         return None
@@ -205,6 +208,31 @@ def evaluate_advika_exit(position: dict, frame: pd.DataFrame) -> dict | None:
     side = str(position.get("side", "")).upper()
     if side not in {"LONG", "SHORT"}:
         return None
+    required = ("ema20", "macd", "macd_signal", "macd_hist")
+    if any(pd.isna(current[name]) for name in required) or any(
+        pd.isna(previous[name]) for name in ("macd", "macd_signal")
+    ):
+        return None
+
+    candle_time = current.timestamp.isoformat()
+    stop = float(position.get("stop_loss", 0) or 0)
+    target = float(position.get("take_profit_1", 0) or 0)
+    partial_taken = bool(position.get("partial_taken", False))
+    # A completed candle touching both stop and target is treated conservatively
+    # as a stop-out because intrabar event order cannot be reconstructed.
+    stop_hit = (
+        stop > 0 and (current.low <= stop if side == "LONG" else current.high >= stop)
+    )
+    if stop_hit:
+        return {"action": "EXIT_REMAINDER", "reason": "stop_loss_touched",
+                "candle_time": candle_time}
+    target_hit = (
+        target > 0 and (current.high >= target if side == "LONG" else current.low <= target)
+    )
+    if target_hit and not partial_taken:
+        return {"action": "TAKE_PARTIAL_50", "reason": "target_1_5r_reached",
+                "candle_time": candle_time}
+
     hist = data.macd_hist.iloc[-4:]
     shrinking = len(hist) == 4 and all(
         abs(float(hist.iloc[i])) < abs(float(hist.iloc[i - 1])) for i in range(1, 4)
@@ -217,6 +245,10 @@ def evaluate_advika_exit(position: dict, frame: pd.DataFrame) -> dict | None:
     if shrinking or crossed_back:
         return {"action": "EXIT_REMAINDER",
                 "reason": "histogram_shrunk_3_bars" if shrinking else "macd_crossed_back",
-                "candle_time": current.timestamp.isoformat()}
-    return {"action": "UPDATE_TRAILING_STOP", "trailing_stop": float(current.ema20),
-            "candle_time": current.timestamp.isoformat()}
+                "candle_time": candle_time}
+
+    ema_stop = float(current.ema20)
+    old_trailing = float(position.get("trailing_stop", stop) or stop)
+    trailing = max(old_trailing, ema_stop) if side == "LONG" else min(old_trailing, ema_stop)
+    return {"action": "UPDATE_TRAILING_STOP", "trailing_stop": trailing,
+            "candle_time": candle_time}
