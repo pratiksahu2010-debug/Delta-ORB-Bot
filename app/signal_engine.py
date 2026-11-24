@@ -993,6 +993,13 @@ class SignalEngine:
                     except Exception:
                         log.exception("Unable to persist Telegram retry schedule key=%s", key)
 
+            try:
+                activated = self.store.activate_delivered_advika_positions()
+                if activated:
+                    log.info("Advika paper positions activated after entry alert delivery count=%s", activated)
+            except Exception:
+                log.exception("Unable to activate delivered Advika paper positions")
+
     def _advika_btc_context_frame(self) -> pd.DataFrame | None:
         """Build BTC's Advika context frame once per candle snapshot.
 
