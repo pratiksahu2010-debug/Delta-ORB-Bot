@@ -1166,7 +1166,10 @@ def test_symbol_validation_subscribes_only_live_configured_perpetuals(tmp_path, 
         engine.configured_symbols = ["BTCUSD", "ETHUSD", "SOLUSD"]
         async def products():
             return {"BTCUSD", "SOLUSD", "XRPUSD"}
+        async def tickers():
+            return []
         monkeypatch.setattr(engine.rest, "live_perpetual_symbols", products)
+        monkeypatch.setattr(engine.rest, "tickers", tickers)
         assert await engine.validate_symbol_universe() is True
         assert engine.active_symbols == ["BTCUSD", "SOLUSD"]
         assert engine.unavailable_symbols == ["ETHUSD"]
@@ -1503,4 +1506,45 @@ def test_advika_uses_240_bars_without_changing_legacy_120_bar_inputs(tmp_path, m
         assert received["advika"] == [240]
         await engine.rest.close()
 
+    asyncio.run(run())
+
+
+def test_large_symbol_universe_keeps_top_100_by_delta_turnover(tmp_path, monkeypatch):
+    async def run():
+        engine, _notifier = make_engine(tmp_path)
+        engine.configured_symbols = [f"COIN{i:03d}USD" for i in range(120)]
+        engine.configured_symbol_set = frozenset(engine.configured_symbols)
+        async def products():
+            return set(engine.configured_symbols)
+        async def tickers():
+            return [
+                {"symbol": symbol, "turnover_usd": str(index + 1)}
+                for index, symbol in enumerate(engine.configured_symbols)
+            ]
+        monkeypatch.setattr(engine.rest, "live_perpetual_symbols", products)
+        monkeypatch.setattr(engine.rest, "tickers", tickers)
+        assert await engine.validate_symbol_universe() is True
+        assert len(engine.active_symbols) == 100
+        assert engine.active_symbols == engine.configured_symbols[20:]
+        assert engine.symbol_validation["liquidity_filtered_count"] == 20
+        assert engine.symbol_validation["liquidity_filtered_symbols"] == engine.configured_symbols[:20]
+        await engine.rest.close()
+    asyncio.run(run())
+
+
+def test_large_symbol_universe_fails_closed_if_ticker_snapshot_incomplete(tmp_path, monkeypatch):
+    async def run():
+        engine, _notifier = make_engine(tmp_path)
+        engine.configured_symbols = [f"COIN{i:03d}USD" for i in range(120)]
+        async def products():
+            return set(engine.configured_symbols)
+        async def tickers():
+            return [{"symbol": "COIN000USD", "turnover_usd": 1000}]
+        monkeypatch.setattr(engine.rest, "live_perpetual_symbols", products)
+        monkeypatch.setattr(engine.rest, "tickers", tickers)
+        assert await engine.validate_symbol_universe() is False
+        assert engine.active_symbols == []
+        assert engine.stream.symbols == []
+        assert engine.symbol_validation["status"] == "error"
+        await engine.rest.close()
     asyncio.run(run())

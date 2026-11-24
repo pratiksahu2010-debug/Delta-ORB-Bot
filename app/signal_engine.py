@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 
 import pandas as pd
 
-from .market_data import DeltaRestClient, DeltaPublicStream
+from .market_data import DeltaRestClient, DeltaPublicStream, select_top_turnover_symbols
 from .models import Candle, Quote
 from .momentum import _frame, _indicators, evaluate_orb
 from .tpr_rb import evaluate_tpr, evaluate_rb
@@ -90,7 +90,10 @@ class SignalEngine:
         )
         self.active_symbols: list[str] = []
         self.unavailable_symbols: list[str] = list(self.configured_symbols)
-        self.symbol_validation = {"status": "pending", "last_attempt_at": None, "last_error": None}
+        self.symbol_validation = {
+            "status": "pending", "last_attempt_at": None, "last_error": None,
+            "liquidity_limit": 100, "liquidity_filtered_symbols": [],
+        }
         self.quotes: dict[str, Quote] = {}
         self.received_at: dict[str, datetime] = {}
         self.last_quote_exchange_at: dict[str, datetime] = {}
@@ -207,6 +210,14 @@ class SignalEngine:
         self.symbol_validation["last_attempt_at"] = attempted.isoformat()
         try:
             live_symbols = await self.rest.live_perpetual_symbols()
+            live_configured = [symbol for symbol in self.configured_symbols if symbol in live_symbols]
+            liquidity_filtered: list[str] = []
+            if len(live_configured) > 100:
+                ticker_rows = await self.rest.tickers()
+                selected = select_top_turnover_symbols(live_configured, ticker_rows, limit=100)
+                selected_set = set(selected)
+                liquidity_filtered = [symbol for symbol in live_configured if symbol not in selected_set]
+                live_configured = [symbol for symbol in self.configured_symbols if symbol in selected_set]
         except Exception as exc:
             self.active_symbols = []
             self.unavailable_symbols = list(self.configured_symbols)
@@ -217,10 +228,13 @@ class SignalEngine:
             log.exception("Delta live perpetual product validation failed; waiting before subscribing")
             return False
 
-        self.active_symbols = [symbol for symbol in self.configured_symbols if symbol in live_symbols]
+        self.active_symbols = live_configured
         self.unavailable_symbols = [
             symbol for symbol in self.configured_symbols if symbol not in live_symbols
         ]
+        self.symbol_validation["liquidity_filtered_symbols"] = liquidity_filtered
+        self.symbol_validation["liquidity_filtered_count"] = len(liquidity_filtered)
+        self.symbol_validation["liquidity_ranked"] = len(live_configured) + len(liquidity_filtered) > 100
         self.stream.set_symbols(self.active_symbols)
         self.symbol_validation.update(
             status="ok" if not self.unavailable_symbols else "partial",
@@ -229,6 +243,7 @@ class SignalEngine:
             configured_count=len(self.configured_symbols),
             active_count=len(self.active_symbols),
             unavailable_count=len(self.unavailable_symbols),
+            liquidity_filtered_count=len(liquidity_filtered),
         )
         if self.unavailable_symbols:
             log.error(

@@ -86,6 +86,39 @@ def parse_rest_candles(payload: Any, resolution: str, now: datetime | None = Non
     return ordered
 
 
+def select_top_turnover_symbols(
+    symbols: list[str], ticker_rows: list[dict[str, Any]], limit: int = 100,
+) -> list[str]:
+    """Select the highest-turnover configured symbols from a complete ticker snapshot.
+
+    Require a valid turnover_usd value for every configured symbol so a partial
+    exchange response can never silently push an unknown symbol out of the universe.
+    """
+    if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
+        raise ValueError("Liquidity universe limit must be a positive integer")
+    turnover_by_symbol: dict[str, float] = {}
+    configured = set(symbols)
+    for row in ticker_rows:
+        if not isinstance(row, dict):
+            continue
+        symbol = str(row.get("symbol") or "").strip().upper()
+        if symbol not in configured:
+            continue
+        if symbol in turnover_by_symbol:
+            raise ValueError(f"Duplicate ticker row for configured symbol {symbol}")
+        try:
+            turnover = float(row["turnover_usd"])
+        except (KeyError, TypeError, ValueError, OverflowError):
+            raise ValueError(f"Missing or invalid turnover_usd for {symbol}") from None
+        if not math.isfinite(turnover) or turnover < 0:
+            raise ValueError(f"Non-finite or negative turnover_usd for {symbol}")
+        turnover_by_symbol[symbol] = turnover
+    missing = sorted(configured.difference(turnover_by_symbol))
+    if missing:
+        raise ValueError("Ticker snapshot missing configured symbols: " + ",".join(missing))
+    return sorted(symbols, key=lambda symbol: (-turnover_by_symbol[symbol], symbol))[:limit]
+
+
 class DeltaRestClient:
     def __init__(self, base_url: str):
         self.client = httpx.AsyncClient(
