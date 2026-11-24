@@ -270,6 +270,82 @@ class SignalStore:
             "sent_signal_at": row[8],
         }
 
+    def create_advika_position(self, signal_key: str, position: dict) -> bool:
+        """Create a signal-only position once; duplicate signal delivery cannot reset it."""
+        now = _utc_now().isoformat()
+        setup_time = str(position["setup_time"])
+        encoded = json.dumps(position, separators=(",", ":"))
+        if self.backend == "sqlite":
+            sql = """INSERT OR IGNORE INTO advika_positions
+                     (signal_key,symbol,status,position_json,last_processed_candle,created_at,updated_at)
+                     VALUES (?,?, 'open', ?, ?, ?, ?)"""
+        else:
+            sql = """INSERT INTO advika_positions
+                     (signal_key,symbol,status,position_json,last_processed_candle,created_at,updated_at)
+                     VALUES (%s,%s,'open',%s,%s,%s,%s)
+                     ON CONFLICT(signal_key) DO NOTHING"""
+        with self._connect() as db:
+            cur = db.execute(sql, (
+                signal_key, str(position["symbol"]), encoded, setup_time, now, now,
+            ))
+            return cur.rowcount == 1
+
+    def list_open_advika_positions(self, symbol: str) -> list[dict]:
+        placeholder = "?" if self.backend == "sqlite" else "%s"
+        with self._connect() as db:
+            rows = db.execute(
+                f"""SELECT signal_key,status,position_json,last_processed_candle
+                    FROM advika_positions
+                    WHERE symbol={placeholder} AND status IN ('open','partial')
+                    ORDER BY created_at ASC""",
+                (symbol,),
+            ).fetchall()
+        positions = []
+        for signal_key, status, payload, last_candle in rows:
+            try:
+                position = json.loads(payload or "{}")
+            except (TypeError, ValueError):
+                continue
+            position.update({
+                "signal_key": signal_key, "status": status,
+                "last_processed_candle": last_candle,
+            })
+            positions.append(position)
+        return positions
+
+    def update_advika_position(
+        self, signal_key: str, position: dict, status: str, last_processed_candle: str,
+    ) -> bool:
+        """Advance one open paper position; terminal positions cannot be reopened."""
+        clean_status = str(status).lower()
+        if clean_status not in {"open", "partial", "closed"}:
+            raise ValueError("invalid_advika_position_status")
+        now = _utc_now().isoformat()
+        placeholder = "?" if self.backend == "sqlite" else "%s"
+        with self._connect() as db:
+            cur = db.execute(
+                f"""UPDATE advika_positions
+                    SET status={placeholder}, position_json={placeholder},
+                        last_processed_candle={placeholder}, updated_at={placeholder}
+                    WHERE signal_key={placeholder} AND status IN ('open','partial')""",
+                (clean_status, json.dumps(position, separators=(",", ":")),
+                 last_processed_candle, now, signal_key),
+            )
+            return cur.rowcount == 1
+
+    def advika_position_health(self) -> dict:
+        with self._connect() as db:
+            rows = db.execute(
+                "SELECT status,COUNT(*) FROM advika_positions GROUP BY status"
+            ).fetchall()
+        counts = {str(status): int(count or 0) for status, count in rows}
+        return {
+            "open": counts.get("open", 0),
+            "partial": counts.get("partial", 0),
+            "closed": counts.get("closed", 0),
+            "active": counts.get("open", 0) + counts.get("partial", 0),
+        }
+
     def save_pending_setup(self, symbol: str, strategy: str, payload: dict) -> None:
         """Persist an armed setup; live quote-confirmation state is intentionally excluded."""
         now = _utc_now().isoformat()
