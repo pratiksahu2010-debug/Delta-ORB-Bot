@@ -205,3 +205,43 @@ def test_delivery_record_reports_outbox_and_sent_signal_rows_without_payload(tmp
     assert sent["sent_signal_recorded"] is True
     assert sent["outbox_sent_at"] == sent["sent_signal_at"]
     assert sent["attempts"] == 1
+
+
+def test_advika_position_state_survives_reopen_and_advances_idempotently(tmp_path):
+    path = tmp_path / "state.sqlite3"
+    store = SignalStore(str(path))
+    key = "BTCUSD:ADVIKA:LONG:2026-11-24T08:00:00+00:00"
+    position = {
+        "symbol": "BTCUSD", "side": "LONG", "entry_price": 100.0,
+        "stop_loss": 98.0, "take_profit_1": 103.0,
+        "trailing_stop": 98.0, "partial_taken": False,
+        "setup_time": "2026-11-24T08:00:00+00:00",
+    }
+    assert store.create_advika_position(key, position) is True
+    assert store.create_advika_position(key, {**position, "entry_price": 999}) is False
+
+    reopened = SignalStore(str(path))
+    loaded = reopened.list_open_advika_positions("BTCUSD")
+    assert len(loaded) == 1
+    assert loaded[0]["entry_price"] == 100.0
+    assert loaded[0]["status"] == "open"
+    assert loaded[0]["last_processed_candle"] == position["setup_time"]
+
+    updated = {**loaded[0], "partial_taken": True, "trailing_stop": 101.0}
+    assert reopened.update_advika_position(
+        key, updated, "partial", "2026-11-24T08:05:00+00:00",
+    ) is True
+    health = reopened.advika_position_health()
+    assert health == {"open": 0, "partial": 1, "closed": 0, "active": 1}
+
+    active = reopened.list_open_advika_positions("BTCUSD")
+    assert len(active) == 1
+    assert active[0]["partial_taken"] is True
+    assert active[0]["trailing_stop"] == 101.0
+    assert active[0]["last_processed_candle"] == "2026-11-24T08:05:00+00:00"
+
+    assert reopened.update_advika_position(
+        key, updated, "closed", "2026-11-24T08:10:00+00:00",
+    ) is True
+    assert reopened.list_open_advika_positions("BTCUSD") == []
+    assert reopened.advika_position_health()["closed"] == 1
