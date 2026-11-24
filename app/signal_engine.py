@@ -912,11 +912,12 @@ class SignalEngine:
                         )
                     except Exception:
                         log.exception("Unable to update journal Telegram-delivered lifecycle key=%s", key)
-                    self.store.transition_setup(
-                        str(alert["symbol"]), str(alert.get("strategy", "UNKNOWN")),
-                        str(alert["setup_time"]), "ALERT_QUEUED", "TELEGRAM_SENT",
-                        "telegram_delivery_confirmed", event_at=datetime.now(timezone.utc).isoformat(),
-                    )
+                    if str(alert.get("strategy", "")).upper() != "ADVIKA":
+                        self.store.transition_setup(
+                            str(alert["symbol"]), str(alert.get("strategy", "UNKNOWN")),
+                            str(alert["setup_time"]), "ALERT_QUEUED", "TELEGRAM_SENT",
+                            "telegram_delivery_confirmed", event_at=datetime.now(timezone.utc).isoformat(),
+                        )
                     self.sent_keys.add(key)
                     self.telegram_delivery["sent"] += 1
                     self.telegram_delivery["last_success_at"] = datetime.now(timezone.utc).isoformat()
@@ -1243,6 +1244,62 @@ class SignalEngine:
             "Setup armed symbol=%s strategy=%s side=%s candle=%s trigger=%.8f",
             symbol, strategy, result["side"], latest.timestamp.isoformat(), trigger,
         )
+
+    async def _queue_completed_candle_signal(self, symbol: str, latest: Candle, result: dict) -> None:
+        """Queue Advika's close-confirmed signal without the legacy quote trigger."""
+        strategy = "ADVIKA"
+        candle_time = latest.timestamp.isoformat()
+        key = f"{symbol}:{strategy}:{result['side']}:{candle_time}"
+        try:
+            if self.store.is_sent(key):
+                return
+            alert = {
+                "symbol": symbol, "side": result["side"], "strategy": strategy,
+                "entry": float(result["entry_reference"]),
+                "stop_loss": float(result["stop_loss"]),
+                "take_profit_1": float(result["take_profit_1"]),
+                "atr": float(result["atr"]),
+                "setup_time": candle_time,
+                "reason": result["reason"],
+                "context_15m": "Not used by Advika Choice",
+                "trigger_confirmed_at": result["candle_close_time"],
+                "risk_percent_cap": 1.0,
+                "position_size_formula": result["position_size_formula"],
+                "partial_exit_percent": 50,
+                "trailing_stop": result["trailing_stop"],
+                "early_exit": result["early_exit"],
+                "ema20": result["ema20"],
+                "adx": result["adx"], "rsi": result["rsi"],
+                "macd": result["macd"], "macd_signal": result["macd_signal"],
+                "macd_histogram": result["macd_histogram"],
+                "relative_volume": result["relative_volume"],
+                "outcome_horizon_bars": int(getattr(self.settings, "outcome_horizon_bars", 12)),
+                "outcome_fee_pct": float(getattr(self.settings, "outcome_fee_pct", 0.0)),
+                "outcome_slippage_pct": float(getattr(self.settings, "outcome_slippage_pct", 0.0)),
+                "outcome_tp2_r_multiple": float(getattr(self.settings, "outcome_tp2_r_multiple", 2.0)),
+            }
+            # Persist the notification intent before attempting network delivery.
+            self.store.enqueue_alert(key, alert)
+            self.journal.update_lifecycle(
+                strategy, symbol, candle_time, "trigger_confirmed",
+                float(result["entry_reference"]), event_at=result["candle_close_time"],
+                side=result["side"], stop_loss=float(result["stop_loss"]),
+                target_price=float(result["take_profit_1"]), atr=float(result["atr"]),
+                horizon_bars=int(getattr(self.settings, "outcome_horizon_bars", 12)),
+                fee_pct=float(getattr(self.settings, "outcome_fee_pct", 0.0)),
+                slippage_pct=float(getattr(self.settings, "outcome_slippage_pct", 0.0)),
+                tp2_r_multiple=float(getattr(self.settings, "outcome_tp2_r_multiple", 2.0)),
+            )
+            self.advika_signal_count += 1
+            self.advika_last_signal_at = result["candle_close_time"]
+            log.info(
+                "Advika Choice close signal queued symbol=%s side=%s entry=%.10g stop=%.10g target_1_5r=%.10g",
+                symbol, result["side"], result["entry_reference"],
+                result["stop_loss"], result["take_profit_1"],
+            )
+            await self.deliver_outbox()
+        except Exception:
+            log.exception("Advika Choice signal queue failed symbol=%s candle=%s", symbol, candle_time)
 
     async def run(self) -> None:
         stream_task = None
