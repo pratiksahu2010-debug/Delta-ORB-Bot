@@ -13,6 +13,7 @@ from .indicators import adx, atr, ema, rsi
 IST = ZoneInfo("Asia/Kolkata")
 FUNDING_TIMES_IST = (time(5, 30), time(13, 30), time(21, 30))
 HISTORY_BARS = 240
+PULLBACK_LOOKBACK_BARS = 5
 BAR_SECONDS = 300
 
 
@@ -145,9 +146,11 @@ def evaluate_advika_choice(
     if current.atr14 <= 0 or not math.isfinite(float(current.atr14)):
         return _reject(diagnostics, "invalid_atr")
 
+    pullback_low = float(data.low.iloc[-PULLBACK_LOOKBACK_BARS:].min())
+    pullback_high = float(data.high.iloc[-PULLBACK_LOOKBACK_BARS:].max())
     long_ok = (
         current.close > current.ema200 and current.ema50 > current.ema200
-        and current.low <= current.ema50 < current.close
+        and pullback_low <= current.ema50 < current.close
         and previous.macd <= previous.macd_signal and current.macd > current.macd_signal
         and current.macd < 0 and previous.macd_hist <= 0 < current.macd_hist
         and 40 <= previous.rsi14 <= 50 and current.rsi14 > previous.rsi14
@@ -155,7 +158,7 @@ def evaluate_advika_choice(
     )
     short_ok = (
         current.close < current.ema200 and current.ema50 < current.ema200
-        and current.high >= current.ema50 > current.close
+        and pullback_high >= current.ema50 > current.close
         and previous.macd >= previous.macd_signal and current.macd < current.macd_signal
         and current.macd > 0 and previous.macd_hist >= 0 > current.macd_hist
         and 50 <= previous.rsi14 <= 60 and current.rsi14 < previous.rsi14
@@ -172,7 +175,7 @@ def evaluate_advika_choice(
         return _reject(diagnostics, "btc_ema50_filter_failed_for_alt_long")
 
     entry, atr_value = float(current.close), float(current.atr14)
-    stop = max(entry - 2 * atr_value, float(current.low)) if side == "LONG" else min(entry + 2 * atr_value, float(current.high))
+    stop = max(entry - 2 * atr_value, pullback_low) if side == "LONG" else min(entry + 2 * atr_value, pullback_high)
     risk = entry - stop if side == "LONG" else stop - entry
     if not math.isfinite(risk) or risk <= 0:
         return _reject(diagnostics, "invalid_pullback_stop_distance")
@@ -190,7 +193,7 @@ def evaluate_advika_choice(
         "macd_signal": float(current.macd_signal), "macd_histogram": float(current.macd_hist),
         "adx": float(current.adx14), "rsi": float(current.rsi14),
         "relative_volume": float(current.volume / current.volume_avg20),
-        "pullback_extreme": float(current.low if side == "LONG" else current.high),
+        "pullback_extreme": pullback_low if side == "LONG" else pullback_high,
     }
     if diagnostics is not None:
         diagnostics.clear()
