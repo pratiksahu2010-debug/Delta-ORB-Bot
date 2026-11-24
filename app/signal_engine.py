@@ -1080,13 +1080,14 @@ class SignalEngine:
                 # candles. An empty incremental response is not a history fault:
                 # keep the validated cache and let the normal freshness/gap checks
                 # below decide whether a full recovery is actually required.
-                if updates:
+                if updates and max(bar.timestamp for bar in updates) >= previous_bars[-1].timestamp:
                     merged = {bar.timestamp: bar for bar in previous_bars}
-                    # Overlap rows may be older than the cached tail; retain them
-                    # for exchange corrections without treating that as regression.
                     merged.update({bar.timestamp: bar for bar in updates})
                     bars = sorted(merged.values(), key=lambda bar: bar.timestamp)[-history_limit:]
                 else:
+                    # Empty or regressed incremental snapshots are normal no-op
+                    # polls. Keep the last validated cache; downstream freshness
+                    # and continuity checks still force a full recovery when needed.
                     bars = previous_bars
             else:
                 bars = await self.rest.candles(symbol, "5m", history_limit)
