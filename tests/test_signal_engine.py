@@ -1736,3 +1736,51 @@ def test_advika_position_manager_queues_partial_and_final_exit_once(tmp_path, mo
 
     asyncio.run(run())
     asyncio.run(engine.rest.close())
+
+
+def test_advika_position_manager_does_not_advance_when_exit_evaluation_is_unavailable(
+    tmp_path, monkeypatch,
+):
+    import app.signal_engine as signal_engine_module
+
+    engine, _notifier = make_engine(tmp_path)
+    setup_time = datetime.now(timezone.utc) - timedelta(minutes=10)
+    position = {
+        "signal_key": "BTCUSD:ADVIKA:LONG:warmup",
+        "symbol": "BTCUSD", "side": "LONG", "entry_price": 100.0,
+        "stop_loss": 98.0, "take_profit_1": 103.0, "atr": 2.0,
+        "trailing_stop": 98.0, "partial_taken": False,
+        "setup_time": setup_time.isoformat(), "status": "open",
+        "last_processed_candle": setup_time.isoformat(),
+    }
+
+    class PositionStore:
+        def __init__(self):
+            self.position = dict(position)
+            self.updates = 0
+
+        def list_open_advika_positions(self, symbol):
+            return [dict(self.position)] if symbol == "BTCUSD" else []
+
+        def update_advika_position(self, key, updated, status, candle_time):
+            self.updates += 1
+            self.position.update(updated)
+            self.position["status"] = status
+            self.position["last_processed_candle"] = candle_time
+
+    store = PositionStore()
+    engine.store = store
+    monkeypatch.setattr(signal_engine_module, "evaluate_advika_exit", lambda *_args: None)
+    candle_time = setup_time + timedelta(minutes=5)
+
+    async def run():
+        await engine._manage_advika_positions(
+            "BTCUSD", Candle(candle_time, 100, 101, 99, 100, 10),
+            pd.DataFrame([{"close": 100.0}]),
+        )
+        assert store.updates == 0
+        assert store.position["last_processed_candle"] == setup_time.isoformat()
+        assert store.position["status"] == "open"
+        await engine.rest.close()
+
+    asyncio.run(run())
