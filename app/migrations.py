@@ -600,6 +600,23 @@ def _migration_10_add_canonical_neon_storage(db, backend: str) -> None:
     db.execute("CREATE INDEX IF NOT EXISTS idx_ml_feedback_signal_module ON ml_feedback_labels(signal_id,strategy,created_at)")
 
 
+def _migration_11_create_advika_signal_positions(db, backend: str) -> None:
+    """Create durable signal-only Advika position tracking."""
+    db.execute("""CREATE TABLE IF NOT EXISTS advika_positions (
+        signal_key TEXT PRIMARY KEY,
+        symbol TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('pending','open','partial','closed')),
+        position_json TEXT NOT NULL,
+        last_processed_candle TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    )""")
+    db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_advika_positions_symbol_status "
+        "ON advika_positions(symbol,status,updated_at)"
+    )
+
+
 MIGRATIONS: tuple[tuple[int, str, Callable], ...] = (
     (1, "create_base_signal_schema", _migration_1_create_base_schema),
     (2, "add_lifecycle_telemetry_and_outbox_leases", _migration_2_add_lifecycle_and_outbox_leases),
@@ -611,6 +628,7 @@ MIGRATIONS: tuple[tuple[int, str, Callable], ...] = (
     (8, "create_durable_signal_outcomes", _migration_8_create_signal_outcomes),
     (9, "create_point_in_time_shadow_ml_tables", _migration_9_create_shadow_ml_tables),
     (10, "add_canonical_neon_storage_schema", _migration_10_add_canonical_neon_storage),
+    (11, "create_advika_signal_only_positions", _migration_11_create_advika_signal_positions),
 )
 
 

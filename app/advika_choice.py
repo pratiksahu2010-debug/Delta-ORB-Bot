@@ -52,29 +52,49 @@ def _reject(diagnostics, reason, values=None):
     return None
 
 
-def _prepare(frame: pd.DataFrame) -> pd.DataFrame | None:
+def _prepare(frame: pd.DataFrame, diagnostics: dict | None = None) -> pd.DataFrame | None:
     required = {"timestamp", "open", "high", "low", "close", "volume"}
-    if not isinstance(frame, pd.DataFrame) or not required.issubset(frame.columns) or len(frame) < HISTORY_BARS:
+
+    def reject(reason: str, values: dict | None = None):
+        if diagnostics is not None:
+            diagnostics.clear()
+            diagnostics.update({"reason": reason})
+            if values:
+                diagnostics["values"] = values
         return None
+
+    if not isinstance(frame, pd.DataFrame):
+        return reject("invalid_candle_frame")
+    missing = sorted(required - set(frame.columns))
+    if missing:
+        return reject("missing_ohlcv_columns", {"missing": ",".join(missing)})
+    if len(frame) < HISTORY_BARS:
+        return reject("insufficient_history", {
+            "bars_available": len(frame), "required_bars": HISTORY_BARS,
+        })
     data = frame.loc[:, ["timestamp", "open", "high", "low", "close", "volume"]].copy()
     data["timestamp"] = pd.to_datetime(data["timestamp"], utc=True, errors="coerce")
+    if data.timestamp.isna().any():
+        return reject("invalid_candle_timestamp")
     for col in ("open", "high", "low", "close", "volume"):
         data[col] = pd.to_numeric(data[col], errors="coerce")
-    if data.isna().any().any():
-        return None
+    if data[["open", "high", "low", "close", "volume"]].isna().any().any():
+        return reject("invalid_numeric_ohlcv")
     prices = data[["open", "high", "low", "close"]]
     numeric = data[["open", "high", "low", "close", "volume"]].to_numpy(dtype=float)
-    if not np.isfinite(numeric).all() or (prices <= 0).any().any() or (data.volume < 0).any():
-        return None
+    if not np.isfinite(numeric).all():
+        return reject("non_finite_ohlcv")
+    if (prices <= 0).any().any() or (data.volume < 0).any():
+        return reject("invalid_price_or_volume")
     if data.timestamp.duplicated().any():
-        return None
+        return reject("duplicate_candle_timestamp")
     data = data.sort_values("timestamp").reset_index(drop=True)
     if ((data.high < data[["open", "close", "low"]].max(axis=1)).any()
             or (data.low > data[["open", "close", "high"]].min(axis=1)).any()):
-        return None
+        return reject("invalid_ohlc_relationship")
     stamps = data.timestamp.tolist()
     if any((b - a).total_seconds() != BAR_SECONDS for a, b in zip(stamps, stamps[1:])):
-        return None
+        return reject("noncontiguous_5m_history")
     return data
 
 
@@ -116,9 +136,11 @@ def evaluate_advika_choice(
     min_score: int = 75, diagnostics: dict | None = None,
 ) -> dict | None:
     """Evaluate one symbol's newest fully closed 5m candle."""
-    data = _prepare(frame)
+    data = _prepare(frame, diagnostics)
     if data is None:
-        return _reject(diagnostics, "history_or_ohlcv_invalid", {"required_bars": HISTORY_BARS})
+        reason = str((diagnostics or {}).get("reason", "history_or_ohlcv_invalid"))
+        values = (diagnostics or {}).get("values", {"required_bars": HISTORY_BARS})
+        return _reject(diagnostics, reason, values)
     data = _with_indicators(data)
     current, previous = data.iloc[-1], data.iloc[-2]
     close_time = current.timestamp.to_pydatetime() + timedelta(minutes=5)
@@ -282,8 +304,10 @@ def evaluate_advika_exit(position: dict, frame: pd.DataFrame) -> dict | None:
         target > 0 and (current.high >= target if side == "LONG" else current.low <= target)
     )
     if target_hit and not partial_taken:
+        ema_stop = float(current.ema20)
+        initial_trail = max(stop, ema_stop) if side == "LONG" else min(stop, ema_stop)
         return {"action": "TAKE_PARTIAL_50", "reason": "target_1_5r_reached",
-                "candle_time": candle_time}
+                "trailing_stop": initial_trail, "candle_time": candle_time}
 
     hist = data.macd_hist.iloc[-4:]
     shrinking = len(hist) == 4 and all(

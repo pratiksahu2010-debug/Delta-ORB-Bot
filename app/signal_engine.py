@@ -16,7 +16,7 @@ from .state_store import SignalStore
 from .signal_journal import SignalJournal
 from .validation import validate_quote
 from .risk import LIVE_TARGET_R_MULTIPLE
-from .advika_choice import HISTORY_BARS as ADVIKA_HISTORY_BARS, evaluate_advika_choice
+from .advika_choice import HISTORY_BARS as ADVIKA_HISTORY_BARS, evaluate_advika_choice, evaluate_advika_exit
 
 log = logging.getLogger(__name__)
 
@@ -167,6 +167,10 @@ class SignalEngine:
         # expose its own close-signal/outbox lifecycle instead of implying that
         # an empty trigger_lifecycle means the signal was not sent.
         self.advika_signal_delivery = {
+            "queued": 0, "sent": 0, "failed": 0,
+            "last_queued_at": None, "last_sent_at": None, "last_error_at": None,
+        }
+        self.advika_management_delivery = {
             "queued": 0, "sent": 0, "failed": 0,
             "last_queued_at": None, "last_sent_at": None, "last_error_at": None,
         }
@@ -909,8 +913,13 @@ class SignalEngine:
                     if not delivered:
                         self.telegram_delivery["failed"] += 1
                         if str(alert.get("strategy", "")).upper() == "ADVIKA":
-                            self.advika_signal_delivery["failed"] += 1
-                            self.advika_signal_delivery["last_error_at"] = datetime.now(timezone.utc).isoformat()
+                            counter = (
+                                self.advika_management_delivery
+                                if alert.get("alert_type") == "advika_management"
+                                else self.advika_signal_delivery
+                            )
+                            counter["failed"] += 1
+                            counter["last_error_at"] = datetime.now(timezone.utc).isoformat()
                         self.store.schedule_retry(key, lease_token, 60, str(delivery.get("error") or "notifier returned false"))
                         log.warning("Telegram delivery failed key=%s status=%s", key, self.telegram_delivery["last_status"])
                         continue
@@ -956,15 +965,25 @@ class SignalEngine:
                     self.telegram_delivery["sent"] += 1
                     self.telegram_delivery["last_success_at"] = datetime.now(timezone.utc).isoformat()
                     if str(alert.get("strategy", "")).upper() == "ADVIKA":
-                        self.advika_signal_delivery["sent"] += 1
-                        self.advika_signal_delivery["last_sent_at"] = self.telegram_delivery["last_success_at"]
+                        counter = (
+                            self.advika_management_delivery
+                            if alert.get("alert_type") == "advika_management"
+                            else self.advika_signal_delivery
+                        )
+                        counter["sent"] += 1
+                        counter["last_sent_at"] = self.telegram_delivery["last_success_at"]
                     self.telegram_delivery["last_error"] = None
                     log.info("Durable Telegram alert delivered key=%s http_status=%s", key, self.telegram_delivery["last_http_status"])
                 except Exception as exc:
                     self.telegram_delivery["failed"] += 1
                     if str(alert.get("strategy", "")).upper() == "ADVIKA":
-                        self.advika_signal_delivery["failed"] += 1
-                        self.advika_signal_delivery["last_error_at"] = datetime.now(timezone.utc).isoformat()
+                        counter = (
+                            self.advika_management_delivery
+                            if alert.get("alert_type") == "advika_management"
+                            else self.advika_signal_delivery
+                        )
+                        counter["failed"] += 1
+                        counter["last_error_at"] = datetime.now(timezone.utc).isoformat()
                     safe_error = f"delivery_exception:{type(exc).__name__}"
                     self.telegram_delivery["last_status"] = "failed"
                     self.telegram_delivery["last_error"] = safe_error
@@ -973,6 +992,13 @@ class SignalEngine:
                         self.store.schedule_retry(key, lease_token, 5, safe_error)
                     except Exception:
                         log.exception("Unable to persist Telegram retry schedule key=%s", key)
+
+            try:
+                activated = self.store.activate_delivered_advika_positions()
+                if activated:
+                    log.info("Advika paper positions activated after entry alert delivery count=%s", activated)
+            except Exception:
+                log.exception("Unable to activate delivered Advika paper positions")
 
     def _advika_btc_context_frame(self) -> pd.DataFrame | None:
         """Build BTC's Advika context frame once per candle snapshot.
@@ -1263,6 +1289,7 @@ class SignalEngine:
                     "timestamp": b.timestamp, "open": b.open, "high": b.high,
                     "low": b.low, "close": b.close, "volume": b.volume,
                 } for b in bars[-ADVIKA_HISTORY_BARS:]])
+                await self._manage_advika_positions(symbol, latest, advika_frame)
                 advika_result = evaluate_advika_choice(
                     advika_frame, symbol=symbol, btc_frame=btc_frame,
                     dead_hours_ist=getattr(self.settings, "advika_dead_hours_ist", ""),
@@ -1353,6 +1380,105 @@ class SignalEngine:
             symbol, strategy, result["side"], latest.timestamp.isoformat(), trigger,
         )
 
+    async def _manage_advika_positions(
+        self, symbol: str, latest: Candle, frame: pd.DataFrame,
+    ) -> None:
+        """Manage persisted Advika paper positions from completed 5m candles only."""
+        try:
+            positions = self.store.list_open_advika_positions(symbol)
+        except Exception:
+            log.exception("Unable to load Advika paper positions symbol=%s", symbol)
+            return
+        candle_time = latest.timestamp.isoformat()
+        queued_management_alert = False
+        for position in positions:
+            signal_key = str(position.get("signal_key", ""))
+            last_processed = str(position.get("last_processed_candle", ""))
+            if not signal_key or last_processed >= candle_time:
+                continue
+            try:
+                result = evaluate_advika_exit(position, frame)
+                status = str(position.get("status", "open"))
+                action = str((result or {}).get("action", "HOLD")).upper()
+                reason = str((result or {}).get("reason", "no_exit_update"))
+                notify_action = None
+                if action == "TAKE_PARTIAL_50":
+                    position["partial_taken"] = True
+                    position["trailing_stop"] = float(
+                        (result or {}).get("trailing_stop", position.get("stop_loss", 0))
+                    )
+                    position["last_notified_trailing_stop"] = position["trailing_stop"]
+                    status = "partial"
+                    notify_action = action
+                elif action == "UPDATE_TRAILING_STOP":
+                    proposed = float((result or {}).get("trailing_stop", position.get("trailing_stop", 0)))
+                    old = float(position.get("trailing_stop", position.get("stop_loss", 0)) or 0)
+                    side = str(position.get("side", "")).upper()
+                    tightened = proposed > old if side == "LONG" else proposed < old
+                    if tightened:
+                        position["trailing_stop"] = proposed
+                        last_notified = float(position.get("last_notified_trailing_stop", old) or old)
+                        atr_value = float(position.get("atr", 0) or 0)
+                        notification_threshold = max(0.25 * atr_value, abs(last_notified) * 0.0001)
+                        notification_delta = (
+                            proposed - last_notified if side == "LONG"
+                            else last_notified - proposed
+                        )
+                        if notification_delta >= notification_threshold:
+                            position["last_notified_trailing_stop"] = proposed
+                            notify_action = action
+                        log.info(
+                            "Advika EMA20 trail tightened symbol=%s side=%s stop=%.10g candle=%s",
+                            symbol, side, proposed, candle_time,
+                        )
+                elif action == "EXIT_REMAINDER":
+                    status = "closed"
+                    notify_action = action
+
+                if notify_action:
+                    current_price = float(frame.iloc[-1]["close"])
+                    # Partial/final exits are one-per-position; trail updates
+                    # are idempotent per stop price and emitted only after a material
+                    # tightening of at least 0.25 ATR (or 0.01% of price).
+                    management_key = (
+                        f"{signal_key}:management:{notify_action}:{round(float(position.get('trailing_stop', 0)), 8)}"
+                        if notify_action == "UPDATE_TRAILING_STOP"
+                        else f"{signal_key}:management:{notify_action}"
+                    )
+                    inserted = self.store.enqueue_alert(management_key, {
+                        "alert_type": "advika_management",
+                        "strategy": "ADVIKA", "symbol": symbol,
+                        "side": str(position.get("side", "")),
+                        "action": notify_action, "reason": (
+                            "ema20_trailing_stop_tightened"
+                            if notify_action == "UPDATE_TRAILING_STOP" else reason
+                        ),
+                        "entry": float(position.get("entry_price", 0)),
+                        "stop_loss": float(position.get("stop_loss", 0)),
+                        "take_profit_1": float(position.get("take_profit_1", 0)),
+                        "price": current_price,
+                        "active_stop": float(position.get("trailing_stop", position.get("stop_loss", 0))),
+                        "setup_time": str(position.get("setup_time", "")),
+                        "candle_time": candle_time,
+                        "partial_exit_percent": 50,
+                        "partial_taken": bool(position.get("partial_taken", False)),
+                    })
+                    queued_management_alert = True
+                    if inserted:
+                        self.advika_management_delivery["queued"] += 1
+                        self.advika_management_delivery["last_queued_at"] = datetime.now(timezone.utc).isoformat()
+                self.store.update_advika_position(
+                    signal_key, position, status, candle_time,
+                )
+            except Exception:
+                log.exception(
+                    "Advika position management failed symbol=%s signal_key=%s candle=%s",
+                    symbol, signal_key, candle_time,
+                )
+        # Drain the outbox only when this candle created a management alert.
+        if queued_management_alert:
+            await self.deliver_outbox()
+
     async def _queue_completed_candle_signal(self, symbol: str, latest: Candle, result: dict) -> None:
         """Queue Advika's close-confirmed signal without the legacy quote trigger."""
         strategy = "ADVIKA"
@@ -1386,8 +1512,18 @@ class SignalEngine:
                 "outcome_slippage_pct": float(getattr(self.settings, "outcome_slippage_pct", 0.0)),
                 "outcome_tp2_r_multiple": float(getattr(self.settings, "outcome_tp2_r_multiple", 2.0)),
             }
-            # Persist the notification intent before attempting network delivery.
-            self.store.enqueue_alert(key, alert)
+            # Persist the notification intent and its paper position in one
+            # transaction so a delivered entry can never lack management state.
+            self.store.enqueue_advika_signal(key, alert, {
+                "symbol": symbol, "side": result["side"],
+                "entry_price": float(result["entry_reference"]),
+                "stop_loss": float(result["stop_loss"]),
+                "take_profit_1": float(result["take_profit_1"]),
+                "atr": float(result["atr"]),
+                "trailing_stop": float(result["stop_loss"]),
+                "last_notified_trailing_stop": float(result["stop_loss"]),
+                "partial_taken": False, "setup_time": candle_time,
+            })
             self.journal.update_lifecycle(
                 strategy, symbol, candle_time, "trigger_confirmed",
                 float(result["entry_reference"]), event_at=result["candle_close_time"],
@@ -1636,6 +1772,10 @@ class SignalEngine:
             state_store_ok = self.store.health()
         except Exception:
             state_store_ok = False
+        try:
+            advika_position_health = self.store.advika_position_health() if state_store_ok else None
+        except Exception:
+            advika_position_health = None
         quote_ages = {
             symbol: round((now - self.received_at[symbol]).total_seconds(), 3)
             for symbol in self.received_at
@@ -1802,6 +1942,8 @@ class SignalEngine:
             "strategy_diagnostics": module_diagnostics,
             "telegram_delivery": dict(self.telegram_delivery),
             "advika_signal_delivery": dict(self.advika_signal_delivery),
+            "advika_management_delivery": dict(self.advika_management_delivery),
+            "advika_positions": advika_position_health,
             "pending_setups": len(self.pending) + len(self.momentum_pending),
             "persisted_pending_setups": self.store.pending_setup_count() if state_store_ok else None,
             "setup_lifecycle": self.store.setup_lifecycle_health() if state_store_ok else None,

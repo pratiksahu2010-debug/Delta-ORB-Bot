@@ -45,7 +45,39 @@ class TelegramNotifier:
 
     @staticmethod
     def _format_signal(signal: dict) -> str:
-        """Format every signal field in bold HTML, escaping all dynamic values."""
+        """Format signal and signal-only management alerts as escaped Telegram HTML."""
+        if signal.get("alert_type") == "advika_management":
+            action = str(signal.get("action", "")).upper()
+            action_label = {
+                "TAKE_PARTIAL_50": "TARGET HIT — CLOSE 50% MANUALLY",
+                "EXIT_REMAINDER": (
+                    "EXIT REMAINING 50% MANUALLY"
+                    if signal.get("partial_taken")
+                    else "EXIT FULL POSITION MANUALLY"
+                ),
+                "UPDATE_TRAILING_STOP": "EMA20 TRAILING STOP TIGHTENED",
+            }.get(action, action or "POSITION UPDATE")
+            symbol = html.escape(str(signal.get("symbol", "UNKNOWN")))
+            side = html.escape(str(signal.get("side", "")))
+            price = html.escape(str(signal.get("price", "N/A")))
+            active_stop = html.escape(str(signal.get("active_stop", signal.get("stop_loss", "N/A"))))
+            reason = html.escape(str(signal.get("reason", "N/A")))
+            candle_time = html.escape(str(signal.get("candle_time", "N/A")))
+            chart_url = html.escape(
+                TelegramNotifier.tradingview_chart_url(signal.get("symbol", "")),
+                quote=True,
+            )
+            return "\n".join([
+                f"⚠️ <b>{symbol} | Advika Choice</b>",
+                f"<b>{html.escape(action_label)}</b>",
+                f"<b>Side: {side}</b>",
+                f"<b>Reference price: {price}</b>",
+                f"<b>Active stop: {active_stop}</b>",
+                f"<b>Reason: {reason}</b>",
+                f"<b>Completed candle (UTC): {candle_time}</b>",
+                f'<a href="{chart_url}">📊 OPEN TRADINGVIEW CHART (5m)</a>',
+                "<b>Signal only — manage manually; no order was placed.</b>",
+            ])
         strategy = str(signal.get("strategy", "PULLBACK")).upper()
         strategy_label = {
             "PULLBACK": "NORMAL",

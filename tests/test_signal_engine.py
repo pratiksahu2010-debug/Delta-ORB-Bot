@@ -1,5 +1,6 @@
 import asyncio
 import pytest
+import pandas as pd
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
@@ -1643,3 +1644,95 @@ def test_empty_incremental_candle_response_keeps_fresh_cache_without_full_refetc
         await engine.rest.close()
 
     asyncio.run(run())
+
+
+def test_advika_position_manager_queues_partial_and_final_exit_once(tmp_path, monkeypatch):
+    import app.signal_engine as signal_engine_module
+
+    engine, _notifier = make_engine(tmp_path)
+    setup_time = datetime.now(timezone.utc) - timedelta(minutes=10)
+    position = {
+        "signal_key": "BTCUSD:ADVIKA:LONG:test",
+        "symbol": "BTCUSD", "side": "LONG", "entry_price": 100.0,
+        "stop_loss": 98.0, "take_profit_1": 103.0, "atr": 2.0,
+        "trailing_stop": 98.0, "last_notified_trailing_stop": 98.0,
+        "partial_taken": False, "setup_time": setup_time.isoformat(),
+        "status": "open", "last_processed_candle": setup_time.isoformat(),
+    }
+
+    class PositionStore:
+        def __init__(self):
+            self.positions = [dict(position)]
+            self.alerts = {}
+
+        def list_open_advika_positions(self, symbol):
+            return [dict(p) for p in self.positions if p["symbol"] == symbol and p["status"] in {"open", "partial"}]
+
+        def enqueue_alert(self, key, payload):
+            if key in self.alerts:
+                return False
+            self.alerts[key] = payload
+            return True
+
+        def update_advika_position(self, key, updated, status, candle_time):
+            current = next(p for p in self.positions if p["signal_key"] == key)
+            current.update(updated)
+            current["status"] = status
+            current["last_processed_candle"] = candle_time
+            return True
+
+    store = PositionStore()
+    engine.store = store
+    delivered = []
+
+    async def drain_outbox():
+        delivered.append(True)
+
+    engine.deliver_outbox = drain_outbox
+    calls = {"count": 0}
+
+    def fake_exit(_position, _frame):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            return {
+                "action": "TAKE_PARTIAL_50", "reason": "target_1_5r_reached",
+                "trailing_stop": 101.0,
+            }
+        if calls["count"] == 2:
+            return {"action": "UPDATE_TRAILING_STOP", "trailing_stop": 102.0}
+        return {"action": "EXIT_REMAINDER", "reason": "trailing_stop_touched"}
+
+    monkeypatch.setattr(signal_engine_module, "evaluate_advika_exit", fake_exit)
+    frame = pd.DataFrame([{"close": 104.0}])
+    first_candle = setup_time + timedelta(minutes=5)
+    second_candle = setup_time + timedelta(minutes=10)
+    third_candle = setup_time + timedelta(minutes=15)
+
+    async def run():
+        await engine._manage_advika_positions(
+            "BTCUSD", Candle(first_candle, 103, 105, 102, 104, 20), frame,
+        )
+        assert store.positions[0]["status"] == "partial"
+        assert store.positions[0]["partial_taken"] is True
+        assert store.positions[0]["trailing_stop"] == 101.0
+        await engine._manage_advika_positions(
+            "BTCUSD", Candle(second_candle, 104, 105, 103, 104, 18), frame,
+        )
+        assert store.positions[0]["trailing_stop"] == 102.0
+        await engine._manage_advika_positions(
+            "BTCUSD", Candle(third_candle, 104, 105, 100, 102, 18), frame,
+        )
+        assert store.positions[0]["status"] == "closed"
+        assert len(store.alerts) == 3
+        assert {p["action"] for p in store.alerts.values()} == {
+            "TAKE_PARTIAL_50", "UPDATE_TRAILING_STOP", "EXIT_REMAINDER",
+        }
+        assert len(delivered) == 3
+        # Reprocessing the same closed candle cannot emit another management alert.
+        await engine._manage_advika_positions(
+            "BTCUSD", Candle(third_candle, 104, 105, 100, 102, 18), frame,
+        )
+        assert len(store.alerts) == 3
+
+    asyncio.run(run())
+    asyncio.run(engine.rest.close())

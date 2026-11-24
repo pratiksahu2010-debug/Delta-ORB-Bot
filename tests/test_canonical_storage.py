@@ -288,7 +288,7 @@ def test_migration_10_backfills_existing_outcome_and_ml_rows(tmp_path):
             ("eval-1","ORB","feedback-v1","GOOD_ENTRY","telegram",now),
         )
 
-    assert apply_migrations(lambda: sqlite3.connect(path), "sqlite") == [10]
+    assert apply_migrations(lambda: sqlite3.connect(path), "sqlite") == [10, 11]
     with sqlite3.connect(path) as db:
         outcome = db.execute(
             """SELECT id,signal_id,module,result,target1_hit,target2_hit,

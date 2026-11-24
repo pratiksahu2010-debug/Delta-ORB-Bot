@@ -59,7 +59,7 @@ class SignalStore:
             ).fetchone()
         return row is not None
 
-    def enqueue_alert(self, signal_key: str, payload: dict) -> None:
+    def enqueue_alert(self, signal_key: str, payload: dict) -> bool:
         """Persist the alert before network delivery; duplicate keys are idempotent."""
         now = _utc_now().isoformat()
         sql = (
@@ -72,7 +72,42 @@ class SignalStore:
                VALUES (%s, %s, 'pending', 0, %s, %s, %s) ON CONFLICT (signal_key) DO NOTHING"""
         )
         with self._connect() as db:
-            db.execute(sql, (signal_key, json.dumps(payload, separators=(",", ":")), now, now, now))
+            cur = db.execute(sql, (signal_key, json.dumps(payload, separators=(",", ":")), now, now, now))
+            return cur.rowcount == 1
+
+    def enqueue_advika_signal(
+        self, signal_key: str, alert: dict, position: dict,
+    ) -> tuple[bool, bool]:
+        """Atomically persist an Advika entry alert and its paper position."""
+        now = _utc_now().isoformat()
+        setup_time = str(position["setup_time"])
+        encoded_alert = json.dumps(alert, separators=(",", ":"))
+        encoded_position = json.dumps(position, separators=(",", ":"))
+        if self.backend == "sqlite":
+            outbox_sql = """INSERT OR IGNORE INTO alert_outbox
+                (signal_key,payload_json,status,attempts,created_at,next_attempt_at,updated_at)
+                VALUES (?,?,'pending',0,?,?,?)"""
+            position_sql = """INSERT OR IGNORE INTO advika_positions
+                (signal_key,symbol,status,position_json,last_processed_candle,created_at,updated_at)
+                VALUES (?,?,'pending',?,?,?,?)"""
+        else:
+            outbox_sql = """INSERT INTO alert_outbox
+                (signal_key,payload_json,status,attempts,created_at,next_attempt_at,updated_at)
+                VALUES (%s,%s,'pending',0,%s,%s,%s) ON CONFLICT(signal_key) DO NOTHING"""
+            position_sql = """INSERT INTO advika_positions
+                (signal_key,symbol,status,position_json,last_processed_candle,created_at,updated_at)
+                VALUES (%s,%s,'pending',%s,%s,%s,%s) ON CONFLICT(signal_key) DO NOTHING"""
+        with self._connect() as db:
+            outbox_cur = db.execute(
+                outbox_sql, (signal_key, encoded_alert, now, now, now),
+            )
+            position_cur = db.execute(
+                position_sql, (
+                    signal_key, str(position["symbol"]), encoded_position,
+                    setup_time, now, now,
+                ),
+            )
+            return outbox_cur.rowcount == 1, position_cur.rowcount == 1
 
     def due_alerts(self, limit: int = 50) -> list[tuple[str, dict]]:
         now = _utc_now().isoformat()
@@ -268,6 +303,75 @@ class SignalStore:
             "last_error": str(row[7])[:180] if row[7] else None,
             "sent_signal_recorded": row[8] is not None,
             "sent_signal_at": row[8],
+        }
+
+    def list_open_advika_positions(self, symbol: str) -> list[dict]:
+        placeholder = "?" if self.backend == "sqlite" else "%s"
+        with self._connect() as db:
+            rows = db.execute(
+                f"""SELECT signal_key,status,position_json,last_processed_candle
+                    FROM advika_positions
+                    WHERE symbol={placeholder} AND status IN ('open','partial')
+                    ORDER BY created_at ASC""",
+                (symbol,),
+            ).fetchall()
+        positions = []
+        for signal_key, status, payload, last_candle in rows:
+            try:
+                position = json.loads(payload or "{}")
+            except (TypeError, ValueError):
+                continue
+            position.update({
+                "signal_key": signal_key, "status": status,
+                "last_processed_candle": last_candle,
+            })
+            positions.append(position)
+        return positions
+
+    def update_advika_position(
+        self, signal_key: str, position: dict, status: str, last_processed_candle: str,
+    ) -> bool:
+        """Advance one open paper position; terminal positions cannot be reopened."""
+        clean_status = str(status).lower()
+        if clean_status not in {"open", "partial", "closed"}:
+            raise ValueError("invalid_advika_position_status")
+        now = _utc_now().isoformat()
+        placeholder = "?" if self.backend == "sqlite" else "%s"
+        with self._connect() as db:
+            cur = db.execute(
+                f"""UPDATE advika_positions
+                    SET status={placeholder}, position_json={placeholder},
+                        last_processed_candle={placeholder}, updated_at={placeholder}
+                    WHERE signal_key={placeholder} AND status IN ('open','partial')""",
+                (clean_status, json.dumps(position, separators=(",", ":")),
+                 last_processed_candle, now, signal_key),
+            )
+            return cur.rowcount == 1
+
+    def activate_delivered_advika_positions(self) -> int:
+        """Activate paper positions only after Telegram accepted their entry alert."""
+        placeholder = "?" if self.backend == "sqlite" else "%s"
+        with self._connect() as db:
+            cur = db.execute(
+                f"""UPDATE advika_positions SET status='open',updated_at={placeholder}
+                    WHERE status='pending'
+                    AND signal_key IN (SELECT signal_key FROM sent_signals)""",
+                (_utc_now().isoformat(),),
+            )
+            return int(cur.rowcount or 0)
+
+    def advika_position_health(self) -> dict:
+        with self._connect() as db:
+            rows = db.execute(
+                "SELECT status,COUNT(*) FROM advika_positions GROUP BY status"
+            ).fetchall()
+        counts = {str(status): int(count or 0) for status, count in rows}
+        return {
+            "pending": counts.get("pending", 0),
+            "open": counts.get("open", 0),
+            "partial": counts.get("partial", 0),
+            "closed": counts.get("closed", 0),
+            "active": counts.get("open", 0) + counts.get("partial", 0),
         }
 
     def save_pending_setup(self, symbol: str, strategy: str, payload: dict) -> None:

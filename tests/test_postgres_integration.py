@@ -201,6 +201,7 @@ def test_postgres_schema_migrations_are_versioned_and_idempotent(postgres_url):
         (8, "create_durable_signal_outcomes"),
         (9, "create_point_in_time_shadow_ml_tables"),
         (10, "add_canonical_neon_storage_schema"),
+        (11, "create_advika_signal_only_positions"),
     ]
     assert store.backend == "postgresql"
     assert journal.backend == "postgresql"
@@ -223,12 +224,12 @@ def test_postgres_concurrent_startup_serializes_versioned_migrations(postgres_ur
                 lambda _: apply_migrations(connect, "postgresql"), range(6)
             ))
 
-        assert sorted(version for batch in applied for version in batch) == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+        assert sorted(version for batch in applied for version in batch) == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
         with connect() as db:
             versions = db.execute(
                 "SELECT version FROM schema_migrations ORDER BY version"
             ).fetchall()
-            assert versions == [(1,), (2,), (3,), (4,), (5,), (6,), (7,), (8,), (9,), (10,)]
+            assert versions == [(1,), (2,), (3,), (4,), (5,), (6,), (7,), (8,), (9,), (10,), (11,)]
             assert db.execute("SELECT COUNT(*) FROM setup_lifecycle_events").fetchone()[0] == 0
     finally:
         with psycopg.connect(postgres_url) as db:
@@ -305,7 +306,7 @@ def test_postgres_legacy_schema_migration_preserves_existing_records(postgres_ur
                            'sent',1,'a','a','a','b')"""
             )
 
-        assert apply_migrations(connect, "postgresql") == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+        assert apply_migrations(connect, "postgresql") == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
         with connect() as db:
             assert db.execute(
                 "SELECT COUNT(*) FROM alert_outbox WHERE signal_key='legacy-pg-key'"
@@ -337,7 +338,7 @@ def test_postgres_legacy_schema_migration_preserves_existing_records(postgres_ur
                 (schema,),
             ).fetchone()[0]
             assert ml_table_count == 6
-            assert db.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0] == 10
+            assert db.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0] == 11
         assert apply_migrations(connect, "postgresql") == []
     finally:
         with psycopg.connect(postgres_url) as db:
@@ -444,3 +445,48 @@ def test_postgres_canonical_neon_schema_uses_jsonb_timestamps_and_guards(postgre
             "trg_strategy_signals_immutable",
             "trg_strategy_state_events_append_only",
         }
+
+
+def test_postgres_advika_position_waits_for_entry_delivery_and_persists_updates(postgres_url):
+    from datetime import datetime, timezone
+
+    store = SignalStore("./unused.sqlite3", postgres_url)
+    key = f"ADVIKATEST:ADVIKA:LONG:{uuid.uuid4().hex}"
+    setup_time = datetime.now(timezone.utc).isoformat()
+    alert = {
+        "symbol": "ADVIKATEST", "strategy": "ADVIKA", "side": "LONG",
+        "entry": 100.0, "stop_loss": 98.0, "take_profit_1": 103.0,
+        "setup_time": setup_time,
+    }
+    position = {
+        "symbol": "ADVIKATEST", "side": "LONG", "entry_price": 100.0,
+        "stop_loss": 98.0, "take_profit_1": 103.0, "trailing_stop": 98.0,
+        "partial_taken": False, "setup_time": setup_time,
+    }
+    assert store.enqueue_advika_signal(key, alert, position) == (True, True)
+    assert store.list_open_advika_positions("ADVIKATEST") == []
+    # Seed the same durable sent-signal fact that mark_sent records, without
+    # claiming unrelated pending rows left by other PostgreSQL integration tests.
+    placeholder = "%s"
+    with store._connect() as db:
+        db.execute(
+            f"UPDATE alert_outbox SET status='sent' WHERE signal_key={placeholder}",
+            (key,),
+        )
+        db.execute(
+            f"""INSERT INTO sent_signals
+                (signal_key,symbol,side,setup_time,payload_json,sent_at)
+                VALUES ({placeholder},{placeholder},{placeholder},{placeholder},{placeholder},{placeholder})
+                ON CONFLICT(signal_key) DO NOTHING""",
+            (key, "ADVIKATEST", "LONG", setup_time, "{}", setup_time),
+        )
+    assert store.activate_delivered_advika_positions() == 1
+
+    active = store.list_open_advika_positions("ADVIKATEST")
+    assert len(active) == 1 and active[0]["status"] == "open"
+    active[0]["partial_taken"] = True
+    active[0]["trailing_stop"] = 101.0
+    assert store.update_advika_position(
+        key, active[0], "partial", datetime.now(timezone.utc).isoformat(),
+    ) is True
+    assert store.advika_position_health()["partial"] == 1
