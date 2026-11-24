@@ -60,6 +60,15 @@ def make_setup(side, now):
 
 
 
+def test_context_refresh_is_throttled_to_15m_interval():
+    from app.signal_engine import _context_refresh_due
+
+    assert _context_refresh_due(100.0, 0.0, False)
+    assert not _context_refresh_due(200.0, 1000.0, False)
+    assert not _context_refresh_due(1200.0, 1000.0, True)
+    assert _context_refresh_due(1200.0, 1000.0, False)
+
+
 def test_engine_caches_symbol_universe_for_hot_paths(tmp_path):
     engine, _notifier = make_engine(tmp_path)
     assert engine.configured_symbols == ["BTCUSD"]
