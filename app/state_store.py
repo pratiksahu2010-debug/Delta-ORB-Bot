@@ -59,7 +59,7 @@ class SignalStore:
             ).fetchone()
         return row is not None
 
-    def enqueue_alert(self, signal_key: str, payload: dict) -> None:
+    def enqueue_alert(self, signal_key: str, payload: dict) -> bool:
         """Persist the alert before network delivery; duplicate keys are idempotent."""
         now = _utc_now().isoformat()
         sql = (
