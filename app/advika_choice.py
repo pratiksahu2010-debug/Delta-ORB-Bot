@@ -282,8 +282,10 @@ def evaluate_advika_exit(position: dict, frame: pd.DataFrame) -> dict | None:
         target > 0 and (current.high >= target if side == "LONG" else current.low <= target)
     )
     if target_hit and not partial_taken:
+        ema_stop = float(current.ema20)
+        initial_trail = max(stop, ema_stop) if side == "LONG" else min(stop, ema_stop)
         return {"action": "TAKE_PARTIAL_50", "reason": "target_1_5r_reached",
-                "candle_time": candle_time}
+                "trailing_stop": initial_trail, "candle_time": candle_time}
 
     hist = data.macd_hist.iloc[-4:]
     shrinking = len(hist) == 4 and all(
