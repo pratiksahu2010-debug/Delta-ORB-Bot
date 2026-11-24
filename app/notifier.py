@@ -55,6 +55,7 @@ class TelegramNotifier:
                     if signal.get("partial_taken")
                     else "EXIT FULL POSITION MANUALLY"
                 ),
+                "UPDATE_TRAILING_STOP": "EMA20 TRAILING STOP TIGHTENED",
             }.get(action, action or "POSITION UPDATE")
             symbol = html.escape(str(signal.get("symbol", "UNKNOWN")))
             side = html.escape(str(signal.get("side", "")))
