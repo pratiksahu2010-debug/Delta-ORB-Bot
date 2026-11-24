@@ -1401,12 +1401,15 @@ class SignalEngine:
                 status = str(position.get("status", "open"))
                 action = str((result or {}).get("action", "HOLD")).upper()
                 reason = str((result or {}).get("reason", "no_exit_update"))
+                notify_action = None
                 if action == "TAKE_PARTIAL_50":
                     position["partial_taken"] = True
                     position["trailing_stop"] = float(
                         (result or {}).get("trailing_stop", position.get("stop_loss", 0))
                     )
+                    position["last_notified_trailing_stop"] = position["trailing_stop"]
                     status = "partial"
+                    notify_action = action
                 elif action == "UPDATE_TRAILING_STOP":
                     proposed = float((result or {}).get("trailing_stop", position.get("trailing_stop", 0)))
                     old = float(position.get("trailing_stop", position.get("stop_loss", 0)) or 0)
@@ -1414,24 +1417,42 @@ class SignalEngine:
                     tightened = proposed > old if side == "LONG" else proposed < old
                     if tightened:
                         position["trailing_stop"] = proposed
+                        last_notified = float(position.get("last_notified_trailing_stop", old) or old)
+                        atr_value = float(position.get("atr", 0) or 0)
+                        notification_threshold = max(0.25 * atr_value, abs(last_notified) * 0.0001)
+                        notification_delta = (
+                            proposed - last_notified if side == "LONG"
+                            else last_notified - proposed
+                        )
+                        if notification_delta >= notification_threshold:
+                            position["last_notified_trailing_stop"] = proposed
+                            notify_action = action
                         log.info(
                             "Advika EMA20 trail tightened symbol=%s side=%s stop=%.10g candle=%s",
                             symbol, side, proposed, candle_time,
                         )
                 elif action == "EXIT_REMAINDER":
                     status = "closed"
+                    notify_action = action
 
-                if action in {"TAKE_PARTIAL_50", "EXIT_REMAINDER"}:
+                if notify_action:
                     current_price = float(frame.iloc[-1]["close"])
-                    # One idempotency key per position/action prevents repeated
-                    # partial or final-exit messages if a process crashes between
-                    # outbox insertion and position-state advancement.
-                    management_key = f"{signal_key}:management:{action}"
+                    # Partial/final exits are one-per-position; trail updates
+                    # are idempotent per candle and emitted only after a material
+                    # tightening of at least 0.25 ATR (or 0.01% of price).
+                    management_key = (
+                        f"{signal_key}:management:{notify_action}:{candle_time}"
+                        if notify_action == "UPDATE_TRAILING_STOP"
+                        else f"{signal_key}:management:{notify_action}"
+                    )
                     inserted = self.store.enqueue_alert(management_key, {
                         "alert_type": "advika_management",
                         "strategy": "ADVIKA", "symbol": symbol,
                         "side": str(position.get("side", "")),
-                        "action": action, "reason": reason,
+                        "action": notify_action, "reason": (
+                            "ema20_trailing_stop_tightened"
+                            if notify_action == "UPDATE_TRAILING_STOP" else reason
+                        ),
                         "entry": float(position.get("entry_price", 0)),
                         "stop_loss": float(position.get("stop_loss", 0)),
                         "take_profit_1": float(position.get("take_profit_1", 0)),
@@ -1498,7 +1519,9 @@ class SignalEngine:
                 "entry_price": float(result["entry_reference"]),
                 "stop_loss": float(result["stop_loss"]),
                 "take_profit_1": float(result["take_profit_1"]),
+                "atr": float(result["atr"]),
                 "trailing_stop": float(result["stop_loss"]),
+                "last_notified_trailing_stop": float(result["stop_loss"]),
                 "partial_taken": False, "setup_time": candle_time,
             })
             self.journal.update_lifecycle(
