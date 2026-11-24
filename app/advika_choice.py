@@ -154,11 +154,13 @@ def evaluate_advika_choice(
     if any(_in_interval(local_clock, start, end) for start, end in dead_hours):
         return _reject(diagnostics, "configured_dead_hour", {"candle_close_ist": close_time.astimezone(IST).isoformat()})
 
-    fields = ("ema20", "ema50", "ema200", "rsi14", "atr14", "adx14",
-              "macd", "macd_signal", "macd_hist", "volume_avg20")
+    # EMA50/EMA200, RSI and ADX are quality inputs, not mandatory gates.
+    # Missing optional quality indicators therefore contribute zero points.
+    fields = ("ema20", "atr14", "macd", "macd_signal", "macd_hist", "volume_avg20")
+    prior = data.iloc[-3]
     if any(pd.isna(current[k]) for k in fields) or any(
-        pd.isna(previous[k]) for k in ("rsi14", "macd", "macd_signal", "macd_hist")
-    ):
+        pd.isna(previous[k]) for k in ("macd", "macd_signal", "macd_hist")
+    ) or any(pd.isna(prior[k]) for k in ("macd", "macd_signal", "macd_hist")):
         return _reject(diagnostics, "indicator_warmup_or_invalid")
     if not math.isfinite(float(min_relative_volume)) or min_relative_volume < 1.0:
         return _reject(diagnostics, "invalid_min_relative_volume_configuration")
@@ -174,23 +176,46 @@ def evaluate_advika_choice(
 
     pullback_low = float(data.low.iloc[-PULLBACK_LOOKBACK_BARS:].min())
     pullback_high = float(data.high.iloc[-PULLBACK_LOOKBACK_BARS:].max())
-    long_ok = (
-        current.close > current.ema200 and current.ema50 > current.ema200
-        and previous.macd <= previous.macd_signal and current.macd > current.macd_signal
-        and current.macd < 0 and previous.macd_hist <= 0 < current.macd_hist
+    long_cross = (
+        previous.macd <= previous.macd_signal
+        and current.macd > current.macd_signal
+        and current.macd_hist > 0
     )
-    short_ok = (
-        current.close < current.ema200 and current.ema50 < current.ema200
-        and previous.macd >= previous.macd_signal and current.macd < current.macd_signal
-        and current.macd > 0 and previous.macd_hist >= 0 > current.macd_hist
+    short_cross = (
+        previous.macd >= previous.macd_signal
+        and current.macd < current.macd_signal
+        and current.macd_hist < 0
     )
-    side = "LONG" if long_ok else "SHORT" if short_ok else None
+    # Continuation requires an established MACD direction, a contracting
+    # pullback histogram, then renewed expansion on the latest closed candle.
+    long_continuation = (
+        previous.macd > previous.macd_signal
+        and current.macd > current.macd_signal
+        and previous.macd_hist <= prior.macd_hist
+        and current.macd_hist > previous.macd_hist > 0
+    )
+    short_continuation = (
+        previous.macd < previous.macd_signal
+        and current.macd < current.macd_signal
+        and previous.macd_hist >= prior.macd_hist
+        and current.macd_hist < previous.macd_hist < 0
+    )
+    side = (
+        "LONG" if long_cross or long_continuation
+        else "SHORT" if short_cross or short_continuation
+        else None
+    )
     if side is None:
-        return _reject(diagnostics, "mandatory_trend_or_macd_gate_failed", {
-            "ema50": current.ema50, "ema200": current.ema200,
+        return _reject(diagnostics, "mandatory_macd_trigger_failed", {
             "macd": current.macd, "macd_signal": current.macd_signal,
-            "macd_hist": current.macd_hist, "relative_volume": current.volume / current.volume_avg20,
+            "macd_hist": current.macd_hist,
+            "previous_macd_hist": previous.macd_hist,
+            "relative_volume": current.volume / current.volume_avg20,
         })
+    setup_type = (
+        "MACD_CROSSOVER" if (long_cross or short_cross)
+        else "MACD_PULLBACK_CONTINUATION"
+    )
     if side == "LONG" and symbol.upper() != "BTCUSD" and not _btc_above_ema50(btc_frame, current.timestamp):
         return _reject(diagnostics, "btc_ema50_filter_failed_for_alt_long")
 
@@ -201,38 +226,59 @@ def evaluate_advika_choice(
         return _reject(diagnostics, "invalid_pullback_stop_distance")
     target = entry + 1.5 * risk if side == "LONG" else entry - 1.5 * risk
     relative_volume = float(current.volume / current.volume_avg20)
-    # Four hard gates: aligned EMA200 trend, directional MACD cross,
-    # relative volume threshold, and a valid stop/1.5R reward calculation.
-    # RSI, EMA50 pullback proximity, ADX and candle quality are scored, not gates.
-    trend_points = 20
-    macd_points = 20
-    rvol_points = 10 if relative_volume < 1.5 else 12 if relative_volume < 2.0 else 15
-    rr_points = 10
+
+    # MACD trigger and RVOL are mandatory. EMA200/EMA50 are quality factors,
+    # never hard gates; ADX contributes at most five points and never blocks.
+    macd_points = 25
+    rvol_points = 8 if relative_volume < 1.3 else 12 if relative_volume < 1.5 else 15
+    histogram_points = 10 if (
+        (side == "LONG" and current.macd_hist > previous.macd_hist)
+        or (side == "SHORT" and current.macd_hist < previous.macd_hist)
+    ) else 0
+    trend_aligned = pd.notna(current.ema200) and (
+        current.close > current.ema200 if side == "LONG"
+        else current.close < current.ema200
+    )
+    trend_points = 15 if trend_aligned else 0
+    rsi_available = pd.notna(current.rsi14) and pd.notna(previous.rsi14)
+
     if side == "LONG":
-        rsi_points = 15 if 40 <= previous.rsi14 <= 50 and current.rsi14 > previous.rsi14 else (
-            8 if current.rsi14 > previous.rsi14 else 0
+        pullback_distance = (
+            float((data.low.iloc[-PULLBACK_LOOKBACK_BARS:] - current.ema50).abs().min())
+            if pd.notna(current.ema50) else math.inf
         )
-        pullback_distance = float((data.low.iloc[-PULLBACK_LOOKBACK_BARS:] - current.ema50).abs().min())
+        rsi_points = 10 if rsi_available and 40 <= current.rsi14 <= 65 and current.rsi14 > previous.rsi14 else (
+            6 if rsi_available and current.rsi14 > previous.rsi14 else 0
+        )
         candle_close_position = (current.close - current.low) / max(float(current.high - current.low), 1e-12)
+        candle_direction_ok = current.close > current.open
     else:
-        rsi_points = 15 if 50 <= previous.rsi14 <= 60 and current.rsi14 < previous.rsi14 else (
-            8 if current.rsi14 < previous.rsi14 else 0
+        pullback_distance = (
+            float((data.high.iloc[-PULLBACK_LOOKBACK_BARS:] - current.ema50).abs().min())
+            if pd.notna(current.ema50) else math.inf
         )
-        pullback_distance = float((data.high.iloc[-PULLBACK_LOOKBACK_BARS:] - current.ema50).abs().min())
+        rsi_points = 10 if rsi_available and 35 <= current.rsi14 <= 60 and current.rsi14 < previous.rsi14 else (
+            6 if rsi_available and current.rsi14 < previous.rsi14 else 0
+        )
         candle_close_position = (current.high - current.close) / max(float(current.high - current.low), 1e-12)
+        candle_direction_ok = current.close < current.open
     pullback_points = 10 if pullback_distance <= 0.5 * atr_value else 6 if pullback_distance <= atr_value else 0
-    adx_value = float(current.adx14)
+    adx_value = (
+        float(current.adx14)
+        if pd.notna(current.adx14) and math.isfinite(float(current.adx14)) else 0.0
+    )
     adx_points = 0 if adx_value < 15 else 1 if adx_value < 20 else 3 if adx_value <= 25 else 5
     body_ratio = abs(float(current.close - current.open)) / max(float(current.high - current.low), 1e-12)
-    candle_points = 5 if body_ratio >= 0.5 and candle_close_position >= 0.75 else (
-        3 if body_ratio >= 0.3 and candle_close_position >= 0.6 else 0
+    candle_points = 5 if candle_direction_ok and body_ratio >= 0.5 and candle_close_position >= 0.75 else (
+        3 if candle_direction_ok and body_ratio >= 0.3 and candle_close_position >= 0.6 else 0
     )
-    score = int(trend_points + macd_points + rvol_points + rr_points +
-                rsi_points + pullback_points + adx_points + candle_points)
+    rr_points = 5
+    score = int(macd_points + rvol_points + histogram_points + trend_points +
+                pullback_points + rsi_points + adx_points + candle_points + rr_points)
     if score < int(min_score):
         return _reject(diagnostics, "advika_score_below_minimum", {
             "score": score, "minimum_score": int(min_score), "adx": adx_value,
-            "relative_volume": relative_volume,
+            "relative_volume": relative_volume, "setup_type": setup_type,
         })
     result = {
         "side": side, "entry_reference": entry, "trigger_price": entry,
@@ -241,18 +287,21 @@ def evaluate_advika_choice(
         "position_size_formula": "equity * 0.01 / abs(entry - stop)",
         "partial_exit_percent": 50, "trailing_stop": "EMA20 on each completed 5m candle",
         "early_exit": "close remainder if MACD crosses back or histogram magnitude shrinks for 3 consecutive bars",
-        "reason": f"Advika Choice {side}: EMA200 trend + MACD(12,26,9) cross + relative volume {relative_volume:.2f}x; quality {score}/100",
+        "setup_type": setup_type,
+        "reason": f"Advika Choice {side}: {setup_type} MACD(12,26,9) + relative volume {relative_volume:.2f}x; quality {score}/100",
         "setup_time": current.timestamp.isoformat(), "candle_close_time": close_time.isoformat(),
         "ema20": float(current.ema20), "macd": float(current.macd),
         "macd_signal": float(current.macd_signal), "macd_histogram": float(current.macd_hist),
-        "adx": float(current.adx14), "rsi": float(current.rsi14),
+        "adx": adx_value,
+        "rsi": float(current.rsi14) if pd.notna(current.rsi14) else None,
         "relative_volume": relative_volume,
         "quality_score": score, "minimum_quality_score": int(min_score),
         "quality_score_breakdown": {
-            "trend": trend_points, "macd": macd_points, "relative_volume": rvol_points,
-            "risk_reward": rr_points, "rsi_reversal": rsi_points,
-            "ema50_pullback_quality": pullback_points, "adx_strength": adx_points,
-            "signal_candle": candle_points,
+            "macd_trigger": macd_points, "relative_volume": rvol_points,
+            "histogram_expansion": histogram_points, "ema200_alignment": trend_points,
+            "ema50_pullback_quality": pullback_points, "rsi_momentum": rsi_points,
+            "adx_strength": adx_points, "signal_candle": candle_points,
+            "risk_reward": rr_points,
         },
         "pullback_extreme": pullback_low if side == "LONG" else pullback_high,
     }

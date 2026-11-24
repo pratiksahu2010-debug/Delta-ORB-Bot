@@ -240,3 +240,142 @@ def test_advika_reports_invalid_ohlc_relationship_separately():
         bars, symbol="BTCUSD", diagnostics=diagnostics,
     ) is None
     assert diagnostics["reason"] == "invalid_ohlc_relationship"
+
+
+def test_advika_ema_filters_are_scored_not_hard_gates(monkeypatch):
+    _mock_indicators(monkeypatch, "LONG")
+    original = advika._with_indicators
+
+    def countertrend(frame):
+        data = original(frame)
+        data.loc[data.index[-1], ["ema50", "ema200"]] = [111.0, 112.0]
+        return data
+
+    monkeypatch.setattr(advika, "_with_indicators", countertrend)
+    diagnostics = {}
+    result = advika.evaluate_advika_choice(
+        _bars(), symbol="BTCUSD", min_score=50, diagnostics=diagnostics,
+    )
+    assert result is not None
+    assert result["side"] == "LONG"
+    assert result["quality_score_breakdown"]["ema200_alignment"] == 0
+
+
+def test_advika_macd_crossover_does_not_require_macd_below_zero(monkeypatch):
+    _mock_indicators(monkeypatch, "LONG")
+    original = advika._with_indicators
+
+    def positive_cross(frame):
+        data = original(frame)
+        data.loc[data.index[-2], ["macd", "macd_signal", "macd_hist"]] = [0.05, 0.10, -0.05]
+        data.loc[data.index[-1], ["macd", "macd_signal", "macd_hist"]] = [0.15, 0.10, 0.05]
+        return data
+
+    monkeypatch.setattr(advika, "_with_indicators", positive_cross)
+    result = advika.evaluate_advika_choice(_bars(), symbol="BTCUSD", min_score=50)
+    assert result is not None
+    assert result["setup_type"] == "MACD_CROSSOVER"
+
+
+def test_advika_long_pullback_continuation_setup(monkeypatch):
+    _mock_indicators(monkeypatch, "LONG")
+    original = advika._with_indicators
+
+    def continuation(frame):
+        data = original(frame)
+        data.loc[data.index[-3], ["macd", "macd_signal", "macd_hist"]] = [0.2, 0.1, 0.10]
+        data.loc[data.index[-2], ["macd", "macd_signal", "macd_hist"]] = [0.2, 0.1, 0.06]
+        data.loc[data.index[-1], ["macd", "macd_signal", "macd_hist"]] = [0.24, 0.1, 0.14]
+        return data
+
+    monkeypatch.setattr(advika, "_with_indicators", continuation)
+    result = advika.evaluate_advika_choice(_bars(), symbol="BTCUSD", min_score=50)
+    assert result is not None
+    assert result["side"] == "LONG"
+    assert result["setup_type"] == "MACD_PULLBACK_CONTINUATION"
+
+
+def test_advika_short_pullback_continuation_setup(monkeypatch):
+    _mock_indicators(monkeypatch, "SHORT")
+    original = advika._with_indicators
+
+    def continuation(frame):
+        data = original(frame)
+        data.loc[data.index[-3], ["macd", "macd_signal", "macd_hist"]] = [-0.2, -0.1, -0.10]
+        data.loc[data.index[-2], ["macd", "macd_signal", "macd_hist"]] = [-0.2, -0.1, -0.06]
+        data.loc[data.index[-1], ["macd", "macd_signal", "macd_hist"]] = [-0.24, -0.1, -0.14]
+        return data
+
+    monkeypatch.setattr(advika, "_with_indicators", continuation)
+    result = advika.evaluate_advika_choice(_bars(), symbol="BTCUSD", min_score=50)
+    assert result is not None
+    assert result["side"] == "SHORT"
+    assert result["setup_type"] == "MACD_PULLBACK_CONTINUATION"
+
+
+def test_advika_accepts_exact_rvol_threshold(monkeypatch):
+    _mock_indicators(monkeypatch, "LONG")
+    original = advika._with_indicators
+
+    def threshold_volume(frame):
+        data = original(frame)
+        data.loc[data.index[-1], "volume"] = 120.0
+        return data
+
+    monkeypatch.setattr(advika, "_with_indicators", threshold_volume)
+    result = advika.evaluate_advika_choice(
+        _bars(), symbol="BTCUSD", min_score=50,
+    )
+    assert result is not None
+    assert result["relative_volume"] == 1.2
+
+
+def test_advika_ema50_is_quality_score_not_entry_gate(monkeypatch):
+    _mock_indicators(monkeypatch, "LONG")
+    original = advika._with_indicators
+
+    def distant_ema50(frame):
+        data = original(frame)
+        data.loc[data.index[-1], "ema50"] = 130.0
+        return data
+
+    monkeypatch.setattr(advika, "_with_indicators", distant_ema50)
+    result = advika.evaluate_advika_choice(
+        _bars(), symbol="BTCUSD", min_score=50,
+    )
+    assert result is not None
+    assert result["quality_score_breakdown"]["ema50_pullback_quality"] == 0
+
+
+def test_advika_missing_adx_is_zero_score_not_a_rejection(monkeypatch):
+    _mock_indicators(monkeypatch, "LONG")
+    original = advika._with_indicators
+
+    def missing_adx(frame):
+        data = original(frame)
+        data["adx14"] = np.nan
+        return data
+
+    monkeypatch.setattr(advika, "_with_indicators", missing_adx)
+    result = advika.evaluate_advika_choice(_bars(), symbol="BTCUSD")
+    assert result is not None
+    assert result["quality_score_breakdown"]["adx_strength"] == 0
+
+
+def test_advika_missing_ema_filters_only_removes_quality_points(monkeypatch):
+    _mock_indicators(monkeypatch, "LONG")
+    original = advika._with_indicators
+
+    def missing_emas(frame):
+        data = original(frame)
+        data["ema50"] = np.nan
+        data["ema200"] = np.nan
+        return data
+
+    monkeypatch.setattr(advika, "_with_indicators", missing_emas)
+    result = advika.evaluate_advika_choice(
+        _bars(), symbol="BTCUSD", min_score=50,
+    )
+    assert result is not None
+    assert result["quality_score_breakdown"]["ema200_alignment"] == 0
+    assert result["quality_score_breakdown"]["ema50_pullback_quality"] == 0

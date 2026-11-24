@@ -167,3 +167,15 @@ def test_advika_exit_alert_distinguishes_full_from_remaining_position():
     })
     assert "EXIT FULL POSITION MANUALLY" in full_exit
     assert "EXIT REMAINING 50% MANUALLY" in remainder_exit
+
+
+def test_advika_signal_formats_setup_type_and_quality_score():
+    message = TelegramNotifier._format_signal({
+        "symbol": "BTCUSD", "strategy": "ADVIKA", "side": "LONG",
+        "setup_type": "MACD_PULLBACK_CONTINUATION",
+        "quality_score": 86, "minimum_quality_score": 75,
+        "relative_volume": 1.42, "reason": "MACD continuation confirmed",
+    })
+    assert "<b>Setup: MACD_PULLBACK_CONTINUATION</b>" in message
+    assert "<b>Quality score: 86/100 (minimum 75)</b>" in message
+    assert "Signal only — no order placed." in message
