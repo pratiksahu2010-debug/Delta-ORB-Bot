@@ -68,8 +68,8 @@ def _prepare(frame: pd.DataFrame) -> pd.DataFrame | None:
     if data.timestamp.duplicated().any():
         return None
     data = data.sort_values("timestamp").reset_index(drop=True)
-    recent = data.timestamp.iloc[-60:].tolist()
-    if any((b - a).total_seconds() != BAR_SECONDS for a, b in zip(recent, recent[1:])):
+    stamps = data.timestamp.tolist()
+    if any((b - a).total_seconds() != BAR_SECONDS for a, b in zip(stamps, stamps[1:])):
         return None
     return data
 
