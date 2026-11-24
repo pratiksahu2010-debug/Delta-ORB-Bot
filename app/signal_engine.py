@@ -1482,10 +1482,9 @@ class SignalEngine:
                 "outcome_slippage_pct": float(getattr(self.settings, "outcome_slippage_pct", 0.0)),
                 "outcome_tp2_r_multiple": float(getattr(self.settings, "outcome_tp2_r_multiple", 2.0)),
             }
-            # Persist the notification intent and its paper position before
-            # network delivery. This is signal-only tracking, never an order.
-            self.store.enqueue_alert(key, alert)
-            self.store.create_advika_position(key, {
+            # Persist the notification intent and its paper position in one
+            # transaction so a delivered entry can never lack management state.
+            self.store.enqueue_advika_signal(key, alert, {
                 "symbol": symbol, "side": result["side"],
                 "entry_price": float(result["entry_reference"]),
                 "stop_loss": float(result["stop_loss"]),
