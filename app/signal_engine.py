@@ -1082,10 +1082,12 @@ class SignalEngine:
 
         current_strategy = "TPR"
         try:
+            # Keep the established strategies on their original 120-bar
+            # input window. Advika receives its own longer EMA200 warmup frame.
             frame = pd.DataFrame([{
                 "timestamp": b.timestamp, "open": b.open, "high": b.high,
                 "low": b.low, "close": b.close, "volume": b.volume,
-            } for b in bars])
+            } for b in bars[-120:]])
             momentum_specs = []
             if self._module_enabled("ORB") and symbol in self.tpr_rb_symbols:
                 if getattr(self.settings, "tpr_enabled", True):
@@ -1170,8 +1172,12 @@ class SignalEngine:
                     "timestamp": b.timestamp, "open": b.open, "high": b.high,
                     "low": b.low, "close": b.close, "volume": b.volume,
                 } for b in btc_bars]) if btc_bars else None
+                advika_frame = pd.DataFrame([{
+                    "timestamp": b.timestamp, "open": b.open, "high": b.high,
+                    "low": b.low, "close": b.close, "volume": b.volume,
+                } for b in bars[-ADVIKA_HISTORY_BARS:]])
                 advika_result = evaluate_advika_choice(
-                    frame, symbol=symbol, btc_frame=btc_frame,
+                    advika_frame, symbol=symbol, btc_frame=btc_frame,
                     dead_hours_ist=getattr(self.settings, "advika_dead_hours_ist", ""),
                     diagnostics=advika_diagnostics,
                 )
