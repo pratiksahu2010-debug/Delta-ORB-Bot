@@ -47,6 +47,12 @@ def make_engine(tmp_path):
     return SignalEngine(settings, notifier), notifier
 
 
+async def wait_for_outbox(engine):
+    task = engine.outbox_task
+    if task is not None:
+        await task
+
+
 def make_setup(side, now):
     return PendingSetup(
         symbol="BTCUSD", side=side, candle_time=now - timedelta(minutes=5),
@@ -133,6 +139,7 @@ def test_long_trigger_uses_ask_and_recalculates_target(tmp_path):
         later = now + timedelta(seconds=0.6)
         quote = Quote(price=101.0, bid=100.9, ask=101.1, received_at=later)
         await engine.on_quote("BTCUSD", quote, later)
+        await wait_for_outbox(engine)
         assert len(notifier.alerts) == 1
         alert = notifier.alerts[0]
         assert alert["entry"] == 101.1
@@ -153,6 +160,7 @@ def test_short_trigger_uses_bid(tmp_path):
         later = now + timedelta(seconds=0.6)
         quote = Quote(price=99.0, bid=98.9, ask=99.1, received_at=later)
         await engine.on_quote("BTCUSD", quote, later)
+        await wait_for_outbox(engine)
         assert len(notifier.alerts) == 1
         assert notifier.alerts[0]["entry"] == 98.9
         assert notifier.alerts[0]["take_profit_1"] == pytest.approx(92.7)
@@ -234,6 +242,7 @@ def test_breakout_requires_distinct_quotes_and_hold_time(tmp_path):
         enough_time = now + timedelta(seconds=0.6)
         third = Quote(price=101.2, bid=101.1, ask=101.2, received_at=enough_time)
         await engine.on_quote("BTCUSD", third, enough_time)
+        await wait_for_outbox(engine)
         assert len(notifier.alerts) == 1
         await engine.rest.close()
     asyncio.run(run())
@@ -1010,6 +1019,7 @@ def test_trigger_lifecycle_health_records_confirmation_and_delivery_path(tmp_pat
         lifecycle = engine.health()["trigger_lifecycle"]["ORB"]["setup_types"]["TPR"]["events"]
         assert lifecycle["confirmation_started"] == 1
         assert lifecycle["trigger_confirmed"] == 1
+        await wait_for_outbox(engine)
         assert len(notifier.alerts) == 1
         await engine.rest.close()
 
@@ -1143,6 +1153,7 @@ def test_complete_setup_to_durable_telegram_alert_path_for_each_strategy(tmp_pat
         second = Quote(price=101.1, bid=101.0, ask=101.1, received_at=later)
         await engine.on_quote("BTCUSD", second, later)
 
+        await wait_for_outbox(engine)
         assert len(notifier.alerts) == 1
         assert notifier.alerts[0]["strategy"] == strategy
         key = f"BTCUSD:{strategy}:LONG:{setup.candle_time.isoformat()}"
@@ -1278,6 +1289,7 @@ def test_breakout_confirmation_restarts_after_long_gap_between_quotes(tmp_path):
             price=101.2, bid=101.1, ask=101.2, received_at=confirmed_at
         )
         await engine.on_quote("BTCUSD", confirmed, confirmed_at)
+        await wait_for_outbox(engine)
         assert len(notifier.alerts) == 1
         await engine.rest.close()
 
@@ -1440,6 +1452,7 @@ def test_rest_snapshots_never_start_or_advance_breakout_confirmation(tmp_path):
             Quote(price=101.2, bid=101.1, ask=101.2, received_at=confirmed_at),
             confirmed_at,
         )
+        await wait_for_outbox(engine)
         assert len(notifier.alerts) == 1
         await engine.rest.close()
 
@@ -1727,7 +1740,9 @@ def test_advika_position_manager_queues_partial_and_final_exit_once(tmp_path, mo
         assert {p["action"] for p in store.alerts.values()} == {
             "TAKE_PARTIAL_50", "UPDATE_TRAILING_STOP", "EXIT_REMAINDER",
         }
-        assert len(delivered) == 3
+        await wait_for_outbox(engine)
+        # One background drain batches all three queued management alerts.
+        assert len(delivered) == 1
         # Reprocessing the same closed candle cannot emit another management alert.
         await engine._manage_advika_positions(
             "BTCUSD", Candle(third_candle, 104, 105, 100, 102, 18), frame,
@@ -1781,6 +1796,31 @@ def test_advika_position_manager_does_not_advance_when_exit_evaluation_is_unavai
         assert store.updates == 0
         assert store.position["last_processed_candle"] == setup_time.isoformat()
         assert store.position["status"] == "open"
+        await engine.rest.close()
+
+    asyncio.run(run())
+
+
+def test_outbox_delivery_is_scheduled_without_blocking_caller(tmp_path):
+    async def run():
+        engine, _notifier = make_engine(tmp_path)
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def blocked_delivery():
+            started.set()
+            await release.wait()
+
+        engine.deliver_outbox = blocked_delivery
+        engine.schedule_outbox_delivery()
+        await started.wait()
+        assert engine.outbox_task is not None
+        assert not engine.outbox_task.done()
+        first_task = engine.outbox_task
+        engine.schedule_outbox_delivery()
+        assert engine.outbox_task is first_task
+        release.set()
+        await engine.outbox_task
         await engine.rest.close()
 
     asyncio.run(run())
