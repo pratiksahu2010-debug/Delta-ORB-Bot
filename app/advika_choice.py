@@ -247,6 +247,9 @@ def evaluate_advika_exit(position: dict, frame: pd.DataFrame) -> dict | None:
                 "reason": "histogram_shrunk_3_bars" if shrinking else "macd_crossed_back",
                 "candle_time": candle_time}
 
+    if not partial_taken:
+        return {"action": "HOLD", "reason": "waiting_for_1_5r_partial_target",
+                "candle_time": candle_time}
     ema_stop = float(current.ema20)
     old_trailing = float(position.get("trailing_stop", stop) or stop)
     trailing = max(old_trailing, ema_stop) if side == "LONG" else min(old_trailing, ema_stop)
