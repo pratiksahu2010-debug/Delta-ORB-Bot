@@ -1824,3 +1824,79 @@ def test_outbox_delivery_is_scheduled_without_blocking_caller(tmp_path):
         await engine.rest.close()
 
     asyncio.run(run())
+
+
+
+def test_advika_readiness_distinguishes_legacy_warmup_from_ema200_warmup(tmp_path, monkeypatch):
+    from app.models import Candle
+    import app.signal_engine as signal_engine_module
+
+    async def run():
+        engine, _notifier = make_engine(tmp_path)
+        engine.settings.advika_enabled = True
+        now = datetime.now(timezone.utc).replace(second=0, microsecond=0)
+        latest_time = now - timedelta(minutes=5)
+        bars = [
+            Candle(
+                timestamp=latest_time - timedelta(minutes=5 * (59 - index)),
+                open=100.0, high=101.0, low=99.0, close=100.5, volume=10.0,
+            )
+            for index in range(60)
+        ]
+
+        async def fake_candles(_symbol, _timeframe, _limit, *, since=None):
+            return bars
+
+        monkeypatch.setattr(engine.rest, "candles", fake_candles)
+        monkeypatch.setattr(signal_engine_module, "evaluate_advika_choice", lambda *_args, **_kwargs: None)
+        await engine.refresh_symbol("BTCUSD")
+        health = engine.health()
+
+        assert health["candle_readiness"]["legacy"]["ready_count"] == 1
+        assert health["candle_readiness"]["advika"]["enabled"] is True
+        assert health["candle_readiness"]["advika"]["required_bars"] == 240
+        assert health["candle_readiness"]["advika"]["ready_count"] == 0
+        assert health["candle_readiness"]["advika"]["warming_count"] == 1
+        assert health["candle_readiness"]["advika"]["not_ready_reasons"] == {
+            "BTCUSD": "insufficient_240_bar_history"
+        }
+        assert health["candle_diagnostics"]["BTCUSD"]["legacy_state"] == "ready"
+        assert health["candle_diagnostics"]["BTCUSD"]["advika_state"] == "warming"
+        await engine.rest.close()
+
+    asyncio.run(run())
+
+
+def test_advika_readiness_becomes_ready_only_after_240_contiguous_bars(tmp_path, monkeypatch):
+    from app.models import Candle
+    import app.signal_engine as signal_engine_module
+
+    async def run():
+        engine, _notifier = make_engine(tmp_path)
+        engine.settings.advika_enabled = True
+        now = datetime.now(timezone.utc).replace(second=0, microsecond=0)
+        latest_time = now - timedelta(minutes=5)
+        bars = [
+            Candle(
+                timestamp=latest_time - timedelta(minutes=5 * (239 - index)),
+                open=100.0, high=101.0, low=99.0, close=100.5, volume=10.0,
+            )
+            for index in range(240)
+        ]
+
+        async def fake_candles(_symbol, _timeframe, _limit, *, since=None):
+            return bars
+
+        monkeypatch.setattr(engine.rest, "candles", fake_candles)
+        monkeypatch.setattr(signal_engine_module, "evaluate_advika_choice", lambda *_args, **_kwargs: None)
+        await engine.refresh_symbol("BTCUSD")
+        health = engine.health()
+
+        assert health["candle_readiness"]["legacy"]["ready_count"] == 1
+        assert health["candle_readiness"]["advika"]["ready_count"] == 1
+        assert health["candle_readiness"]["advika"]["warming_count"] == 0
+        assert health["candle_readiness"]["advika"]["not_ready_reasons"] == {}
+        assert health["candle_diagnostics"]["BTCUSD"]["advika_state"] == "ready"
+        await engine.rest.close()
+
+    asyncio.run(run())
