@@ -201,6 +201,7 @@ def test_postgres_schema_migrations_are_versioned_and_idempotent(postgres_url):
         (8, "create_durable_signal_outcomes"),
         (9, "create_point_in_time_shadow_ml_tables"),
         (10, "add_canonical_neon_storage_schema"),
+        (11, "create_advika_signal_only_positions"),
     ]
     assert store.backend == "postgresql"
     assert journal.backend == "postgresql"
@@ -223,12 +224,12 @@ def test_postgres_concurrent_startup_serializes_versioned_migrations(postgres_ur
                 lambda _: apply_migrations(connect, "postgresql"), range(6)
             ))
 
-        assert sorted(version for batch in applied for version in batch) == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+        assert sorted(version for batch in applied for version in batch) == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
         with connect() as db:
             versions = db.execute(
                 "SELECT version FROM schema_migrations ORDER BY version"
             ).fetchall()
-            assert versions == [(1,), (2,), (3,), (4,), (5,), (6,), (7,), (8,), (9,), (10,)]
+            assert versions == [(1,), (2,), (3,), (4,), (5,), (6,), (7,), (8,), (9,), (10,), (11,)]
             assert db.execute("SELECT COUNT(*) FROM setup_lifecycle_events").fetchone()[0] == 0
     finally:
         with psycopg.connect(postgres_url) as db:
@@ -337,7 +338,7 @@ def test_postgres_legacy_schema_migration_preserves_existing_records(postgres_ur
                 (schema,),
             ).fetchone()[0]
             assert ml_table_count == 6
-            assert db.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0] == 10
+            assert db.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0] == 11
         assert apply_migrations(connect, "postgresql") == []
     finally:
         with psycopg.connect(postgres_url) as db:
