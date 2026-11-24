@@ -93,13 +93,25 @@ class Settings(BaseSettings):
     def enabled_modules(self) -> list[str]:
         mode = str(self.bot_module or "ALL").strip().upper()
         if mode == "ALL":
-            return ["ORB", "MEX"]
-        if mode in {"ORB", "MEX", "ADVIKA"}:
-            return [mode]
+            modules = ["ORB", "MEX"]
+        elif mode in {"ORB", "MEX"}:
+            modules = [mode]
+        elif mode == "ADVIKA":
+            modules = []
+        else:
+            raise ValueError("BOT_MODULE must be ALL, ORB, MEX, or ADVIKA")
+        if self.advika_enabled:
+            modules.append("ADVIKA")
+        return modules
         raise ValueError("BOT_MODULE must be ALL, ORB, MEX, or ADVIKA")
 
     def module_enabled(self, module: str) -> bool:
-        return str(module).strip().upper() in self.enabled_modules
+        name = str(module).strip().upper()
+        # Advika Choice is an independent strategy lane. It can run beside
+        # whichever legacy BOT_MODULE is selected without replacing that module.
+        if name == "ADVIKA":
+            return bool(self.advika_enabled)
+        return name in self.enabled_modules
 
     def strategy_enabled(self, strategy: str) -> bool:
         name = str(strategy).strip().upper()
