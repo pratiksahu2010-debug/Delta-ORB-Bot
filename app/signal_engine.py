@@ -309,8 +309,11 @@ class SignalEngine:
         checker = getattr(self.settings, "module_enabled", None)
         if callable(checker):
             return bool(checker(module))
+        name = str(module).strip().upper()
+        if name == "ADVIKA":
+            return bool(getattr(self.settings, "advika_enabled", False))
         mode = str(getattr(self.settings, "bot_module", "ALL")).strip().upper()
-        return mode == "ALL" or mode == module.upper()
+        return mode == "ALL" or mode == name
 
     def _strategy_enabled(self, strategy: str) -> bool:
         checker = getattr(self.settings, "strategy_enabled", None)
