@@ -127,11 +127,11 @@ class SignalEngine:
                                          "setups": 0, "rejections": 0},
                 },
             }
-            for strategy in ("TPR", "RB", "ORB", "MEX")
+            for strategy in ("TPR", "RB", "ORB", "MEX", "ADVIKA")
         }
         self.trigger_lifecycle = {
             strategy: {"events": {}, "last_event": None}
-            for strategy in ("TPR", "RB", "ORB", "MEX")
+            for strategy in ("TPR", "RB", "ORB", "MEX", "ADVIKA")
         }
         self.telegram_delivery = {
             "attempts": 0, "sent": 0, "failed": 0, "last_status": None,
