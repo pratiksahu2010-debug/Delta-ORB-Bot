@@ -45,11 +45,6 @@ def _rest_quote_fallback_needed(
     return bool(_stale_quote_symbols(active_symbols, received_at, now, stale_after_seconds))
 
 
-def _context_refresh_due(now_monotonic: float, next_refresh_monotonic: float, task_running: bool) -> bool:
-    """Refresh slow 15m context at most once per context interval, not every scan."""
-    return not task_running and now_monotonic >= next_refresh_monotonic
-
-
 @dataclass
 class PendingSetup:
     symbol: str
@@ -1347,7 +1342,6 @@ class SignalEngine:
         context_task = None
         quote_task = None
         last_validation_monotonic = 0.0
-        next_context_refresh_monotonic = 0.0
         semaphore = asyncio.Semaphore(4)
         context_semaphore = asyncio.Semaphore(1)
 
@@ -1464,18 +1458,10 @@ class SignalEngine:
                 if self.active_symbols and quote_task is None:
                     quote_task = asyncio.create_task(refresh_rest_quotes(), name="delta-rest-ticker-fallback")
                 if self.active_symbols:
-                    now_monotonic = time.monotonic()
-                    context_running = context_task is not None and not context_task.done()
-                    if _context_refresh_due(
-                        now_monotonic, next_context_refresh_monotonic, context_running,
-                    ):
+                    if context_task is None or context_task.done():
                         context_task = asyncio.create_task(
                             refresh_context_batch(), name="delta-15m-context-refresh"
                         )
-                        # 15m context is slow-moving. Fetch it once per 15m
-                        # interval instead of issuing one REST request per symbol
-                        # after every 5m scan pass.
-                        next_context_refresh_monotonic = now_monotonic + 900.0
                     cycle_started = time.monotonic()
                     if self.scan_cycles == 0 or self.scan_cycles % 6 == 0:
                         log.info(
