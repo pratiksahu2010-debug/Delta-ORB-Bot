@@ -79,7 +79,7 @@ class SignalEngine:
         migrate_on_startup = True
         self.rest = DeltaRestClient(settings.delta_base_url)
         self.stream = DeltaPublicStream(
-            [], self.on_quote, self.on_stream_disconnect
+            [], self.on_quote, self.on_stream_disconnect, on_candle=self.on_candle
         )
         self.configured_symbols = list(settings.symbol_list)
         # Snapshot symbol universes once: Settings properties read and validate
@@ -103,6 +103,9 @@ class SignalEngine:
         self.last_rest_quote_poll_at: str | None = None
         self.last_rest_quote_error: str | None = None
         self.candles: dict[str, list[Candle]] = {}
+        # Delta's traded 5m candle stream supplements REST history when REST
+        # snapshots lag. Only completed WS candles are merged into strategy input.
+        self.live_candles: dict[str, dict[datetime, Candle]] = {}
         # Advika's alt-long filter shares one BTC EMA50 frame across the whole scan pass.
         self._advika_btc_frame_source: list[Candle] | None = None
         self._advika_btc_frame_cache: pd.DataFrame | None = None
@@ -1004,6 +1007,35 @@ class SignalEngine:
             trend = "NEUTRAL"
         self.context_15m[symbol] = trend
 
+    async def on_candle(self, symbol: str, candle: Candle, received_at: datetime) -> None:
+        """Cache official Delta 5m updates; forming bars are never evaluated."""
+        if symbol not in self.configured_symbol_set or not isinstance(candle, Candle):
+            return
+        snapshot = self.live_candles.setdefault(symbol, {})
+        snapshot[candle.timestamp] = candle
+        # Keep a bounded rolling cache; the REST history remains responsible
+        # for the long EMA warmup and old bars.
+        if len(snapshot) > ADVIKA_HISTORY_BARS + 60:
+            for stamp in sorted(snapshot)[:len(snapshot) - (ADVIKA_HISTORY_BARS + 60)]:
+                snapshot.pop(stamp, None)
+
+    def _merge_closed_live_candles(
+        self, symbol: str, bars: list[Candle], limit: int,
+    ) -> list[Candle]:
+        """Fill REST omissions with closed Delta WS candles, never synthetic bars."""
+        now = datetime.now(timezone.utc)
+        live = self.live_candles.get(symbol, {})
+        closed = {
+            stamp: candle for stamp, candle in live.items()
+            if stamp + timedelta(minutes=5) <= now
+        }
+        if not closed:
+            return bars
+        merged = {bar.timestamp: bar for bar in closed.values()}
+        # Prefer the REST copy when both feeds supplied the same completed bar.
+        merged.update({bar.timestamp: bar for bar in bars})
+        return sorted(merged.values(), key=lambda bar: bar.timestamp)[-limit:]
+
     async def refresh_symbol(self, symbol: str) -> None:
         # Keep the actionable 5m scan independent from the informational 15m
         # context fetch. The context refresher runs in its own low-concurrency
@@ -1028,10 +1060,14 @@ class SignalEngine:
                 # avoiding another 120-bar payload on every polling cycle.
                 since = max(0, int(previous_bars[-1].timestamp.timestamp()) - 600)
                 updates = await self.rest.candles(symbol, "5m", history_limit, since=since)
-                if updates and max(bar.timestamp for bar in updates) < previous_bars[-1].timestamp:
-                    # A truncated/regressed incremental response cannot be merged
-                    # safely. Fall back to full history before deciding readiness.
+                if not updates or max(bar.timestamp for bar in updates) < previous_bars[-1].timestamp:
+                    # An empty or regressed incremental snapshot is not proof
+                    # that the cached tail is current. Recover from full history.
                     self.force_full_candle_refresh.add(symbol)
+                    log.warning(
+                        "Delta incremental candle snapshot incomplete; retrying full history symbol=%s updates=%s",
+                        symbol, len(updates),
+                    )
                     bars = await self.rest.candles(symbol, "5m", history_limit)
                 else:
                     merged = {bar.timestamp: bar for bar in previous_bars}
@@ -1047,6 +1083,7 @@ class SignalEngine:
             else:
                 diagnostic["reason"] = "refresh_failed_using_cached_data"
             raise
+        bars = self._merge_closed_live_candles(symbol, bars, history_limit)
         self.force_full_candle_refresh.discard(symbol)
         diagnostic["last_attempt_status"] = "success"
         diagnostic["last_error"] = None
@@ -1089,6 +1126,9 @@ class SignalEngine:
         if candle_lag > self.settings.max_candle_lag_seconds:
             already_stale = diagnostic.get("state") == "stale"
             diagnostic.update(state="stale", reason="latest_completed_candle_too_old")
+            # A stale tail must trigger a full-history recovery on the next poll;
+            # repeatedly merging a stale incremental response cannot heal it.
+            self.force_full_candle_refresh.add(symbol)
             # Keep the per-symbol diagnostic current without emitting 120 repeated
             # warnings every poll while the exchange history feed is delayed.
             if not already_stale:
