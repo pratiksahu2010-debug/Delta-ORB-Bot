@@ -465,8 +465,21 @@ def test_postgres_advika_position_waits_for_entry_delivery_and_persists_updates(
     }
     assert store.enqueue_advika_signal(key, alert, position) == (True, True)
     assert store.list_open_advika_positions("ADVIKATEST") == []
-    claim = store.claim_due_alerts()[0]
-    assert store.mark_sent(key, alert, claim[2]) is True
+    # Seed the same durable sent-signal fact that mark_sent records, without
+    # claiming unrelated pending rows left by other PostgreSQL integration tests.
+    placeholder = "%s"
+    with store._connect() as db:
+        db.execute(
+            f"UPDATE alert_outbox SET status='sent' WHERE signal_key={placeholder}",
+            (key,),
+        )
+        db.execute(
+            f"""INSERT INTO sent_signals
+                (signal_key,symbol,side,setup_time,payload_json,sent_at)
+                VALUES ({placeholder},{placeholder},{placeholder},{placeholder},{placeholder},{placeholder})
+                ON CONFLICT(signal_key) DO NOTHING""",
+            (key, "ADVIKATEST", "LONG", setup_time, "{}", setup_time),
+        )
     assert store.activate_delivered_advika_positions() == 1
 
     active = store.list_open_advika_positions("ADVIKATEST")
