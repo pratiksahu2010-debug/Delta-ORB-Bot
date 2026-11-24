@@ -666,3 +666,32 @@ def test_live_candlestick_volume_feed_counts_zero_positive_and_missing_volume():
         "invalid": 0, "stale": 0, "zero_volume": 1, "positive_volume": 1,
     }
     assert [sample["volume"] for sample in diag["recent_samples"]] == [0.0, 12.5]
+
+
+def test_turnover_selection_keeps_highest_liquidity_and_is_deterministic():
+    from app.market_data import select_top_turnover_symbols
+
+    symbols = ["AAAUSD", "BBBUSD", "CCCUSD", "DDDUSD"]
+    tickers = [
+        {"symbol": "AAAUSD", "turnover_usd": "10"},
+        {"symbol": "BBBUSD", "turnover_usd": "40"},
+        {"symbol": "CCCUSD", "turnover_usd": "30"},
+        {"symbol": "DDDUSD", "turnover_usd": "20"},
+    ]
+    assert select_top_turnover_symbols(symbols, tickers, limit=2) == ["BBBUSD", "CCCUSD"]
+    assert select_top_turnover_symbols(symbols, tickers, limit=4) == ["BBBUSD", "CCCUSD", "DDDUSD", "AAAUSD"]
+
+
+def test_turnover_selection_fails_on_incomplete_or_invalid_snapshot():
+    import pytest
+    from app.market_data import select_top_turnover_symbols
+
+    with pytest.raises(ValueError, match="missing configured symbols"):
+        select_top_turnover_symbols(["AAAUSD", "BBBUSD"], [{"symbol": "AAAUSD", "turnover_usd": 10}], 1)
+    with pytest.raises(ValueError, match="invalid turnover"):
+        select_top_turnover_symbols(["AAAUSD"], [{"symbol": "AAAUSD", "turnover_usd": "bad"}], 1)
+    with pytest.raises(ValueError, match="Duplicate ticker"):
+        select_top_turnover_symbols(["AAAUSD"], [
+            {"symbol": "AAAUSD", "turnover_usd": 10},
+            {"symbol": "AAAUSD", "turnover_usd": 11},
+        ], 1)
