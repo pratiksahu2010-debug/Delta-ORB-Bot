@@ -1784,3 +1784,28 @@ def test_advika_position_manager_does_not_advance_when_exit_evaluation_is_unavai
         await engine.rest.close()
 
     asyncio.run(run())
+
+
+def test_outbox_delivery_is_scheduled_without_blocking_caller(tmp_path):
+    async def run():
+        engine, _notifier = make_engine(tmp_path)
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def blocked_delivery():
+            started.set()
+            await release.wait()
+
+        engine.deliver_outbox = blocked_delivery
+        engine.schedule_outbox_delivery()
+        await started.wait()
+        assert engine.outbox_task is not None
+        assert not engine.outbox_task.done()
+        first_task = engine.outbox_task
+        engine.schedule_outbox_delivery()
+        assert engine.outbox_task is first_task
+        release.set()
+        await engine.outbox_task
+        await engine.rest.close()
+
+    asyncio.run(run())
