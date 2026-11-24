@@ -152,6 +152,8 @@ class SignalEngine:
             for symbol in settings.symbol_list
         }
         self.pending: dict[str, PendingSetup] = {}
+        self.advika_signal_count = 0
+        self.advika_last_signal_at: str | None = None
         self.pending_restore = {"restored": 0, "expired": 0, "invalid": 0, "last_restore_at": None}
         # Momentum-family detectors and the combined TPR+RB module keep independent setup lifecycles.
         self.momentum_pending: dict[tuple[str, str], PendingSetup] = {}
@@ -981,6 +983,7 @@ class SignalEngine:
             previous_bars = self.candles.get(symbol)
             force_full = symbol in self.force_full_candle_refresh
             history_limit = ADVIKA_HISTORY_BARS if self._module_enabled("ADVIKA") else 120
+            required_history = history_limit if self._module_enabled("ADVIKA") else 60
             if previous_bars and not force_full:
                 # Re-fetch a two-bar overlap to absorb late exchange corrections,
                 # avoiding another 120-bar payload on every polling cycle.
@@ -994,9 +997,9 @@ class SignalEngine:
                 else:
                     merged = {bar.timestamp: bar for bar in previous_bars}
                     merged.update({bar.timestamp: bar for bar in updates})
-                    bars = sorted(merged.values(), key=lambda bar: bar.timestamp)[-120:]
+                    bars = sorted(merged.values(), key=lambda bar: bar.timestamp)[-history_limit:]
             else:
-                bars = await self.rest.candles(symbol, "5m", 120)
+                bars = await self.rest.candles(symbol, "5m", history_limit)
         except Exception as exc:
             diagnostic["last_attempt_status"] = "error"
             diagnostic["last_error"] = f"{type(exc).__name__}: {str(exc)[:240]}"
@@ -1016,13 +1019,13 @@ class SignalEngine:
             else:
                 diagnostic["reason"] = "empty_refresh_using_cached_data"
             return
-        if len(bars) < 60:
+        if len(bars) < required_history:
             if symbol not in self.candles:
                 diagnostic.update(state="warming", reason="insufficient_history")
             else:
                 diagnostic["reason"] = "insufficient_refresh_using_cached_data"
             diagnostic["last_bar_time"] = bars[-1].timestamp.isoformat()
-            log.info("5m candle history warming symbol=%s bars=%s required=60", symbol, len(bars))
+            log.info("5m candle history warming symbol=%s bars=%s required=%s", symbol, len(bars), required_history)
             return
         latest = bars[-1]
         diagnostic["last_bar_time"] = latest.timestamp.isoformat()
