@@ -1800,6 +1800,7 @@ class SignalEngine:
             "trigger_lifecycle": module_triggers,
             "strategy_diagnostics": module_diagnostics,
             "telegram_delivery": dict(self.telegram_delivery),
+            "advika_signal_delivery": dict(self.advika_signal_delivery),
             "pending_setups": len(self.pending) + len(self.momentum_pending),
             "persisted_pending_setups": self.store.pending_setup_count() if state_store_ok else None,
             "setup_lifecycle": self.store.setup_lifecycle_health() if state_store_ok else None,
