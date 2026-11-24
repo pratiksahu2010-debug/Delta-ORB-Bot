@@ -1432,9 +1432,18 @@ class SignalEngine:
                             "Scanner cycle starting cycle=%s active_symbols=%s",
                             self.scan_cycles + 1, len(self.active_symbols),
                         )
-                    results = await asyncio.gather(
-                        *(refresh_one(symbol) for symbol in self.active_symbols)
-                    )
+                    if self._strategy_enabled("ADVIKA") and "BTCUSD" in self.active_symbols:
+                        # Refresh BTC's closed 5m bar first so the alt-long EMA50
+                        # gate compares the same candle timestamp across symbols.
+                        btc_ok = await refresh_one("BTCUSD")
+                        other_results = await asyncio.gather(
+                            *(refresh_one(symbol) for symbol in self.active_symbols if symbol != "BTCUSD")
+                        )
+                        results = [btc_ok, *other_results]
+                    else:
+                        results = await asyncio.gather(
+                            *(refresh_one(symbol) for symbol in self.active_symbols)
+                        )
                     self.scan_cycles += 1
                     self.last_scan_cycle_at = datetime.now(timezone.utc).isoformat()
                     self.last_scan_cycle_duration_seconds = round(time.monotonic() - cycle_started, 3)
