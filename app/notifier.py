@@ -59,6 +59,7 @@ class TelegramNotifier:
             symbol = html.escape(str(signal.get("symbol", "UNKNOWN")))
             side = html.escape(str(signal.get("side", "")))
             price = html.escape(str(signal.get("price", "N/A")))
+            active_stop = html.escape(str(signal.get("active_stop", signal.get("stop_loss", "N/A"))))
             reason = html.escape(str(signal.get("reason", "N/A")))
             candle_time = html.escape(str(signal.get("candle_time", "N/A")))
             chart_url = html.escape(
@@ -70,6 +71,7 @@ class TelegramNotifier:
                 f"<b>{html.escape(action_label)}</b>",
                 f"<b>Side: {side}</b>",
                 f"<b>Reference price: {price}</b>",
+                f"<b>Active stop: {active_stop}</b>",
                 f"<b>Reason: {reason}</b>",
                 f"<b>Completed candle (UTC): {candle_time}</b>",
                 f'<a href="{chart_url}">📊 OPEN TRADINGVIEW CHART (5m)</a>',
