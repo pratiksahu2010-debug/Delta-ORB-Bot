@@ -305,26 +305,6 @@ class SignalStore:
             "sent_signal_at": row[8],
         }
 
-    def create_advika_position(self, signal_key: str, position: dict) -> bool:
-        """Create a signal-only position once; duplicate signal delivery cannot reset it."""
-        now = _utc_now().isoformat()
-        setup_time = str(position["setup_time"])
-        encoded = json.dumps(position, separators=(",", ":"))
-        if self.backend == "sqlite":
-            sql = """INSERT OR IGNORE INTO advika_positions
-                     (signal_key,symbol,status,position_json,last_processed_candle,created_at,updated_at)
-                     VALUES (?,?, 'pending', ?, ?, ?, ?)"""
-        else:
-            sql = """INSERT INTO advika_positions
-                     (signal_key,symbol,status,position_json,last_processed_candle,created_at,updated_at)
-                     VALUES (%s,%s,'pending',%s,%s,%s,%s)
-                     ON CONFLICT(signal_key) DO NOTHING"""
-        with self._connect() as db:
-            cur = db.execute(sql, (
-                signal_key, str(position["symbol"]), encoded, setup_time, now, now,
-            ))
-            return cur.rowcount == 1
-
     def list_open_advika_positions(self, symbol: str) -> list[dict]:
         placeholder = "?" if self.backend == "sqlite" else "%s"
         with self._connect() as db:
