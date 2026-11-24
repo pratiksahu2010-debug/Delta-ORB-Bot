@@ -1458,3 +1458,49 @@ def test_rest_quote_fallback_targets_only_stale_symbols():
     assert _stale_quote_symbols(
         ["BTCUSD", "ETHUSD", "SOLUSD"], received, now, stale_after_seconds=1.5,
     ) == {"ETHUSD", "SOLUSD"}
+
+
+def test_advika_uses_240_bars_without_changing_legacy_120_bar_inputs(tmp_path, monkeypatch):
+    from app.models import Candle
+    import app.signal_engine as signal_engine_module
+
+    async def run():
+        engine, _notifier = make_engine(tmp_path)
+        engine.settings.advika_enabled = True
+        now = datetime.now(timezone.utc).replace(second=0, microsecond=0)
+        latest_time = now - timedelta(minutes=5)
+        bars = [
+            Candle(
+                timestamp=latest_time - timedelta(minutes=5 * (239 - i)),
+                open=100.0, high=101.0, low=99.0, close=100.5, volume=10.0,
+            )
+            for i in range(240)
+        ]
+        received = {"legacy": [], "advika": []}
+
+        async def fake_candles(_symbol, _timeframe, _limit, *, since=None):
+            assert _limit == 240
+            return bars
+
+        async def no_context(_symbol):
+            return None
+
+        def legacy_evaluator(frame, **_kwargs):
+            received["legacy"].append(len(frame))
+            return None
+
+        def advika_evaluator(frame, **_kwargs):
+            received["advika"].append(len(frame))
+            return None
+
+        monkeypatch.setattr(engine.rest, "candles", fake_candles)
+        monkeypatch.setattr(engine, "refresh_context", no_context)
+        monkeypatch.setattr(signal_engine_module, "evaluate_tpr", legacy_evaluator)
+        monkeypatch.setattr(signal_engine_module, "evaluate_rb", legacy_evaluator)
+        monkeypatch.setattr(signal_engine_module, "evaluate_advika_choice", advika_evaluator)
+        await engine.refresh_symbol("BTCUSD")
+        assert received["legacy"] == [120, 120]
+        assert received["advika"] == [240]
+        await engine.rest.close()
+
+    asyncio.run(run())

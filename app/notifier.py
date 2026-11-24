@@ -52,21 +52,32 @@ class TelegramNotifier:
             "NORMAL": "NORMAL",
             "ORB": "ORB",
             "MEX": "MEX",
+            "ADVIKA": "Advika Choice",
         }.get(strategy, strategy)
         side = str(signal.get("side", "")).upper()
         dot = {"LONG": "🟢", "SHORT": "🔴"}.get(side, "⚪")
         symbol = html.escape(str(signal.get("symbol", "UNKNOWN")))
         heading = f"{dot} <b>{symbol} | {html.escape(strategy_label)}</b>"
 
+        target_label = "Target (1.5R, close 50%)" if strategy == "ADVIKA" else "Target (2R)"
         fields = [
             ("Side", side or "N/A"),
             ("Entry", signal.get("entry", "N/A")),
             ("Stop Loss", signal.get("stop_loss", "N/A")),
-            ("Target (2R)", signal.get("take_profit_1", "N/A")),
+            (target_label, signal.get("take_profit_1", "N/A")),
             ("Setup Time (UTC)", signal.get("setup_time", "N/A")),
-            ("15m Context (informational)", signal.get("context_15m", "UNAVAILABLE")),
-            ("Reason", signal.get("reason", "N/A")),
         ]
+        if strategy == "ADVIKA":
+            fields.extend([
+                ("Risk cap", "1% of equity maximum; size from stop distance"),
+                ("Position size", signal.get("position_size_formula", "N/A")),
+                ("Management", "Take 50% at 1.5R; trail remaining 50% with EMA20"),
+                ("Early exit", signal.get("early_exit", "N/A")),
+                ("ADX / RSI / RVOL", f"{signal.get('adx', 'N/A')} / {signal.get('rsi', 'N/A')} / {signal.get('relative_volume', 'N/A')}"),
+            ])
+        else:
+            fields.append(("15m Context (informational)", signal.get("context_15m", "UNAVAILABLE")))
+        fields.append(("Reason", signal.get("reason", "N/A")))
         lines = [heading]
         lines.extend(
             f"<b>{html.escape(label)}: {html.escape(str(value))}</b>"

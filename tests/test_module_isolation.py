@@ -3,16 +3,17 @@ from app.config import Settings
 
 def test_combined_mode_remains_backward_compatible():
     settings = Settings(bot_module="ALL")
-    assert settings.enabled_modules == ["ORB", "MEX"]
+    assert settings.enabled_modules == ["ORB", "MEX", "ADVIKA"]
     assert settings.strategy_enabled("ORB")
     assert settings.strategy_enabled("RB")
     assert settings.strategy_enabled("TPR")
     assert settings.strategy_enabled("MEX")
+    assert settings.strategy_enabled("ADVIKA")
 
 
 def test_mex_mode_enables_only_mex():
     settings = Settings(bot_module="MEX")
-    assert settings.enabled_modules == ["MEX"]
+    assert settings.enabled_modules == ["MEX", "ADVIKA"]
     assert settings.module_enabled("MEX")
     assert not settings.module_enabled("ORB")
     assert settings.strategy_enabled("MEX")
@@ -23,7 +24,7 @@ def test_mex_mode_enables_only_mex():
 
 def test_orb_mode_enables_orb_family_only():
     settings = Settings(bot_module="ORB")
-    assert settings.enabled_modules == ["ORB"]
+    assert settings.enabled_modules == ["ORB", "ADVIKA"]
     assert settings.module_enabled("ORB")
     assert not settings.module_enabled("MEX")
     assert settings.strategy_enabled("ORB")
@@ -74,3 +75,10 @@ def test_strategy_enabled_respects_individual_strategy_flags():
 def test_strategy_enabled_respects_mex_flag():
     settings = Settings(bot_module="MEX", mex_enabled=False)
     assert settings.strategy_enabled("MEX") is False
+
+
+def test_advika_can_be_disabled_independently():
+    settings = Settings(bot_module="ORB", advika_enabled=False)
+    assert settings.enabled_modules == ["ORB"]
+    assert settings.strategy_enabled("ORB")
+    assert not settings.strategy_enabled("ADVIKA")

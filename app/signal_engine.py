@@ -16,6 +16,7 @@ from .state_store import SignalStore
 from .signal_journal import SignalJournal
 from .validation import validate_quote
 from .risk import LIVE_TARGET_R_MULTIPLE
+from .advika_choice import HISTORY_BARS as ADVIKA_HISTORY_BARS, evaluate_advika_choice
 
 log = logging.getLogger(__name__)
 
@@ -110,7 +111,7 @@ class SignalEngine:
                 "last_evaluated_at": None, "last_candle_at": None,
                 "last_error": None, "last_error_at": None,
             }
-            for strategy in ("TPR", "RB", "ORB", "MEX")
+            for strategy in ("TPR", "RB", "ORB", "MEX", "ADVIKA")
         }
         self.strategy_diagnostics: dict[str, dict] = {
             strategy: {
@@ -126,11 +127,11 @@ class SignalEngine:
                                          "setups": 0, "rejections": 0},
                 },
             }
-            for strategy in ("TPR", "RB", "ORB", "MEX")
+            for strategy in ("TPR", "RB", "ORB", "MEX", "ADVIKA")
         }
         self.trigger_lifecycle = {
             strategy: {"events": {}, "last_event": None}
-            for strategy in ("TPR", "RB", "ORB", "MEX")
+            for strategy in ("TPR", "RB", "ORB", "MEX", "ADVIKA")
         }
         self.telegram_delivery = {
             "attempts": 0, "sent": 0, "failed": 0, "last_status": None,
@@ -151,6 +152,8 @@ class SignalEngine:
             for symbol in settings.symbol_list
         }
         self.pending: dict[str, PendingSetup] = {}
+        self.advika_signal_count = 0
+        self.advika_last_signal_at: str | None = None
         self.pending_restore = {"restored": 0, "expired": 0, "invalid": 0, "last_restore_at": None}
         # Momentum-family detectors and the combined TPR+RB module keep independent setup lifecycles.
         self.momentum_pending: dict[tuple[str, str], PendingSetup] = {}
@@ -306,14 +309,18 @@ class SignalEngine:
         checker = getattr(self.settings, "module_enabled", None)
         if callable(checker):
             return bool(checker(module))
+        name = str(module).strip().upper()
+        if name == "ADVIKA":
+            return bool(getattr(self.settings, "advika_enabled", False))
         mode = str(getattr(self.settings, "bot_module", "ALL")).strip().upper()
-        return mode == "ALL" or mode == module.upper()
+        return mode == "ALL" or mode == name
 
     def _strategy_enabled(self, strategy: str) -> bool:
         checker = getattr(self.settings, "strategy_enabled", None)
         if callable(checker):
             return bool(checker(strategy))
-        module = "ORB" if strategy in {"ORB", "RB", "TPR"} else "MEX"
+        module = ("ORB" if strategy in {"ORB", "RB", "TPR"} else
+                  "ADVIKA" if strategy == "ADVIKA" else "MEX")
         return self._module_enabled(module)
 
     def restore_pending_setups(self) -> dict:
@@ -329,7 +336,7 @@ class SignalEngine:
                 if strategy == "NORMAL":
                     self.store.delete_pending_setup(symbol, strategy)
                     continue
-                if strategy not in ("TPR", "RB", "ORB", "MEX"):
+                if strategy not in ("TPR", "RB", "ORB", "MEX", "ADVIKA"):
                     raise ValueError("unknown_strategy")
                 # Leave another module's durable setup untouched. Each deployed bot
                 # should still use its own database, but this avoids cross-module deletion.
@@ -908,11 +915,12 @@ class SignalEngine:
                         )
                     except Exception:
                         log.exception("Unable to update journal Telegram-delivered lifecycle key=%s", key)
-                    self.store.transition_setup(
-                        str(alert["symbol"]), str(alert.get("strategy", "UNKNOWN")),
-                        str(alert["setup_time"]), "ALERT_QUEUED", "TELEGRAM_SENT",
-                        "telegram_delivery_confirmed", event_at=datetime.now(timezone.utc).isoformat(),
-                    )
+                    if str(alert.get("strategy", "")).upper() != "ADVIKA":
+                        self.store.transition_setup(
+                            str(alert["symbol"]), str(alert.get("strategy", "UNKNOWN")),
+                            str(alert["setup_time"]), "ALERT_QUEUED", "TELEGRAM_SENT",
+                            "telegram_delivery_confirmed", event_at=datetime.now(timezone.utc).isoformat(),
+                        )
                     self.sent_keys.add(key)
                     self.telegram_delivery["sent"] += 1
                     self.telegram_delivery["last_success_at"] = datetime.now(timezone.utc).isoformat()
@@ -978,22 +986,24 @@ class SignalEngine:
         try:
             previous_bars = self.candles.get(symbol)
             force_full = symbol in self.force_full_candle_refresh
+            advika_enabled = self._module_enabled("ADVIKA")
+            history_limit = ADVIKA_HISTORY_BARS if advika_enabled else 120
             if previous_bars and not force_full:
                 # Re-fetch a two-bar overlap to absorb late exchange corrections,
                 # avoiding another 120-bar payload on every polling cycle.
                 since = max(0, int(previous_bars[-1].timestamp.timestamp()) - 600)
-                updates = await self.rest.candles(symbol, "5m", 120, since=since)
+                updates = await self.rest.candles(symbol, "5m", history_limit, since=since)
                 if updates and max(bar.timestamp for bar in updates) < previous_bars[-1].timestamp:
                     # A truncated/regressed incremental response cannot be merged
                     # safely. Fall back to full history before deciding readiness.
                     self.force_full_candle_refresh.add(symbol)
-                    bars = await self.rest.candles(symbol, "5m", 120)
+                    bars = await self.rest.candles(symbol, "5m", history_limit)
                 else:
                     merged = {bar.timestamp: bar for bar in previous_bars}
                     merged.update({bar.timestamp: bar for bar in updates})
-                    bars = sorted(merged.values(), key=lambda bar: bar.timestamp)[-120:]
+                    bars = sorted(merged.values(), key=lambda bar: bar.timestamp)[-history_limit:]
             else:
-                bars = await self.rest.candles(symbol, "5m", 120)
+                bars = await self.rest.candles(symbol, "5m", history_limit)
         except Exception as exc:
             diagnostic["last_attempt_status"] = "error"
             diagnostic["last_error"] = f"{type(exc).__name__}: {str(exc)[:240]}"
@@ -1014,13 +1024,19 @@ class SignalEngine:
                 diagnostic["reason"] = "empty_refresh_using_cached_data"
             return
         if len(bars) < 60:
-            if symbol not in self.candles:
-                diagnostic.update(state="warming", reason="insufficient_history")
-            else:
-                diagnostic["reason"] = "insufficient_refresh_using_cached_data"
+            if advika_enabled:
+                # Retain partial history for incremental EMA200 warmup.
+                self.candles[symbol] = bars
+            diagnostic.update(state="warming", reason="insufficient_legacy_history")
             diagnostic["last_bar_time"] = bars[-1].timestamp.isoformat()
             log.info("5m candle history warming symbol=%s bars=%s required=60", symbol, len(bars))
             return
+        if advika_enabled and len(bars) < ADVIKA_HISTORY_BARS:
+            # Legacy strategies remain available after their 60-bar warmup;
+            # Advika alone waits for the full EMA200 history.
+            self.candles[symbol] = bars
+            diagnostic["advika_state"] = "warming"
+            diagnostic["advika_required_bars"] = ADVIKA_HISTORY_BARS
         latest = bars[-1]
         diagnostic["last_bar_time"] = latest.timestamp.isoformat()
         diagnostic["reason"] = "validating_history"
@@ -1043,9 +1059,13 @@ class SignalEngine:
             if not already_stale:
                 log.warning("Skipping stale 5m candles symbol=%s lag_seconds=%.1f", symbol, candle_lag)
             return
-        recent = bars[-60:]
+        validation_bars = (
+            bars[-ADVIKA_HISTORY_BARS:]
+            if advika_enabled and len(bars) >= ADVIKA_HISTORY_BARS
+            else bars[-60:]
+        )
         if any((current.timestamp - previous.timestamp).total_seconds() != 300
-               for previous, current in zip(recent, recent[1:])):
+               for previous, current in zip(validation_bars, validation_bars[1:])):
             diagnostic.update(state="gap", reason="missing_5m_intervals")
             self.candles[symbol] = bars
             self.force_full_candle_refresh.add(symbol)
@@ -1055,17 +1075,19 @@ class SignalEngine:
             log.warning("Skipping strategy evaluation due to missing 5m intervals symbol=%s", symbol)
             return
         self.candles[symbol] = bars
-        diagnostic.update(state="ready", reason="60_plus_contiguous_fresh_candles")
+        diagnostic.update(state="ready", reason=f"{len(bars)}_contiguous_fresh_5m_candles")
         previous_evaluated = self.last_evaluated.get(symbol)
         if previous_evaluated is not None and latest.timestamp <= previous_evaluated:
             return
 
         current_strategy = "TPR"
         try:
+            # Keep the established strategies on their original 120-bar
+            # input window. Advika receives its own longer EMA200 warmup frame.
             frame = pd.DataFrame([{
                 "timestamp": b.timestamp, "open": b.open, "high": b.high,
                 "low": b.low, "close": b.close, "volume": b.volume,
-            } for b in bars])
+            } for b in bars[-120:]])
             momentum_specs = []
             if self._module_enabled("ORB") and symbol in self.tpr_rb_symbols:
                 if getattr(self.settings, "tpr_enabled", True):
@@ -1141,6 +1163,29 @@ class SignalEngine:
                 self._record_strategy_evaluation(strategy, latest, result, symbol, diagnostics)
                 if result:
                     self._arm_setup(symbol, strategy, result, latest)
+
+            if self._strategy_enabled("ADVIKA") and symbol in self.configured_symbol_set:
+                current_strategy = "ADVIKA"
+                advika_diagnostics = {}
+                btc_bars = self.candles.get("BTCUSD")
+                btc_frame = pd.DataFrame([{
+                    "timestamp": b.timestamp, "open": b.open, "high": b.high,
+                    "low": b.low, "close": b.close, "volume": b.volume,
+                } for b in btc_bars]) if btc_bars else None
+                advika_frame = pd.DataFrame([{
+                    "timestamp": b.timestamp, "open": b.open, "high": b.high,
+                    "low": b.low, "close": b.close, "volume": b.volume,
+                } for b in bars[-ADVIKA_HISTORY_BARS:]])
+                advika_result = evaluate_advika_choice(
+                    advika_frame, symbol=symbol, btc_frame=btc_frame,
+                    dead_hours_ist=getattr(self.settings, "advika_dead_hours_ist", ""),
+                    diagnostics=advika_diagnostics,
+                )
+                self._record_strategy_evaluation(
+                    "ADVIKA", latest, advika_result, symbol, advika_diagnostics,
+                )
+                if advika_result:
+                    await self._queue_completed_candle_signal(symbol, latest, advika_result)
 
             self.last_evaluated[symbol] = latest.timestamp
         except Exception as exc:
@@ -1218,6 +1263,62 @@ class SignalEngine:
             "Setup armed symbol=%s strategy=%s side=%s candle=%s trigger=%.8f",
             symbol, strategy, result["side"], latest.timestamp.isoformat(), trigger,
         )
+
+    async def _queue_completed_candle_signal(self, symbol: str, latest: Candle, result: dict) -> None:
+        """Queue Advika's close-confirmed signal without the legacy quote trigger."""
+        strategy = "ADVIKA"
+        candle_time = latest.timestamp.isoformat()
+        key = f"{symbol}:{strategy}:{result['side']}:{candle_time}"
+        try:
+            if self.store.is_sent(key):
+                return
+            alert = {
+                "symbol": symbol, "side": result["side"], "strategy": strategy,
+                "entry": float(result["entry_reference"]),
+                "stop_loss": float(result["stop_loss"]),
+                "take_profit_1": float(result["take_profit_1"]),
+                "atr": float(result["atr"]),
+                "setup_time": candle_time,
+                "reason": result["reason"],
+                "context_15m": "Not used by Advika Choice",
+                "trigger_confirmed_at": result["candle_close_time"],
+                "risk_percent_cap": 1.0,
+                "position_size_formula": result["position_size_formula"],
+                "partial_exit_percent": 50,
+                "trailing_stop": result["trailing_stop"],
+                "early_exit": result["early_exit"],
+                "ema20": result["ema20"],
+                "adx": result["adx"], "rsi": result["rsi"],
+                "macd": result["macd"], "macd_signal": result["macd_signal"],
+                "macd_histogram": result["macd_histogram"],
+                "relative_volume": result["relative_volume"],
+                "outcome_horizon_bars": int(getattr(self.settings, "outcome_horizon_bars", 12)),
+                "outcome_fee_pct": float(getattr(self.settings, "outcome_fee_pct", 0.0)),
+                "outcome_slippage_pct": float(getattr(self.settings, "outcome_slippage_pct", 0.0)),
+                "outcome_tp2_r_multiple": float(getattr(self.settings, "outcome_tp2_r_multiple", 2.0)),
+            }
+            # Persist the notification intent before attempting network delivery.
+            self.store.enqueue_alert(key, alert)
+            self.journal.update_lifecycle(
+                strategy, symbol, candle_time, "trigger_confirmed",
+                float(result["entry_reference"]), event_at=result["candle_close_time"],
+                side=result["side"], stop_loss=float(result["stop_loss"]),
+                target_price=float(result["take_profit_1"]), atr=float(result["atr"]),
+                horizon_bars=int(getattr(self.settings, "outcome_horizon_bars", 12)),
+                fee_pct=float(getattr(self.settings, "outcome_fee_pct", 0.0)),
+                slippage_pct=float(getattr(self.settings, "outcome_slippage_pct", 0.0)),
+                tp2_r_multiple=float(getattr(self.settings, "outcome_tp2_r_multiple", 2.0)),
+            )
+            self.advika_signal_count += 1
+            self.advika_last_signal_at = result["candle_close_time"]
+            log.info(
+                "Advika Choice close signal queued symbol=%s side=%s entry=%.10g stop=%.10g target_1_5r=%.10g",
+                symbol, result["side"], result["entry_reference"],
+                result["stop_loss"], result["take_profit_1"],
+            )
+            await self.deliver_outbox()
+        except Exception:
+            log.exception("Advika Choice signal queue failed symbol=%s candle=%s", symbol, candle_time)
 
     async def run(self) -> None:
         stream_task = None
@@ -1350,9 +1451,18 @@ class SignalEngine:
                             "Scanner cycle starting cycle=%s active_symbols=%s",
                             self.scan_cycles + 1, len(self.active_symbols),
                         )
-                    results = await asyncio.gather(
-                        *(refresh_one(symbol) for symbol in self.active_symbols)
-                    )
+                    if self._strategy_enabled("ADVIKA") and "BTCUSD" in self.active_symbols:
+                        # Refresh BTC's closed 5m bar first so the alt-long EMA50
+                        # gate compares the same candle timestamp across symbols.
+                        btc_ok = await refresh_one("BTCUSD")
+                        other_results = await asyncio.gather(
+                            *(refresh_one(symbol) for symbol in self.active_symbols if symbol != "BTCUSD")
+                        )
+                        results = [btc_ok, *other_results]
+                    else:
+                        results = await asyncio.gather(
+                            *(refresh_one(symbol) for symbol in self.active_symbols)
+                        )
                     self.scan_cycles += 1
                     self.last_scan_cycle_at = datetime.now(timezone.utc).isoformat()
                     self.last_scan_cycle_duration_seconds = round(time.monotonic() - cycle_started, 3)
@@ -1453,7 +1563,7 @@ class SignalEngine:
             round((now - self.stream.last_heartbeat_at).total_seconds(), 3)
             if self.stream.last_heartbeat_at else None
         )
-        module_setup_types = {"ORB": ("ORB", "RB", "TPR"), "MEX": ("MEX",)}
+        module_setup_types = {"ORB": ("ORB", "RB", "TPR"), "MEX": ("MEX",), "ADVIKA": ("ADVIKA",)}
         module_setup_types = {name: types for name, types in module_setup_types.items() if self._module_enabled(name)}
         module_evaluations = {}
         module_diagnostics = {}
@@ -1512,12 +1622,13 @@ class SignalEngine:
             **{
                 strategy: sum(1 for _, pending_strategy in self.momentum_pending
                               if pending_strategy == strategy)
-                for strategy in ("RB", "ORB", "MEX")
+                for strategy in ("RB", "ORB", "MEX", "ADVIKA")
             },
         }
         pending_by_module = {
             "ORB": pending_by_setup_type["TPR"] + pending_by_setup_type["RB"] + pending_by_setup_type["ORB"],
             "MEX": pending_by_setup_type["MEX"],
+            "ADVIKA": pending_by_setup_type["ADVIKA"],
         }
         return {
             "websocket_connected": self.stream.connected,

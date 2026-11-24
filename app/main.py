@@ -49,6 +49,8 @@ def _enabled_strategy_count() -> int:
         ))
     if _module_is_enabled("MEX"):
         count += int(bool(getattr(settings, "mex_enabled", False)))
+    if _module_is_enabled("ADVIKA"):
+        count += int(bool(getattr(settings, "advika_enabled", True)))
     return count
 
 
