@@ -983,8 +983,8 @@ class SignalEngine:
         try:
             previous_bars = self.candles.get(symbol)
             force_full = symbol in self.force_full_candle_refresh
-            history_limit = ADVIKA_HISTORY_BARS if self._module_enabled("ADVIKA") else 120
-            required_history = history_limit if self._module_enabled("ADVIKA") else 60
+            advika_enabled = self._module_enabled("ADVIKA")
+            history_limit = ADVIKA_HISTORY_BARS if advika_enabled else 120
             if previous_bars and not force_full:
                 # Re-fetch a two-bar overlap to absorb late exchange corrections,
                 # avoiding another 120-bar payload on every polling cycle.
@@ -1020,15 +1020,20 @@ class SignalEngine:
             else:
                 diagnostic["reason"] = "empty_refresh_using_cached_data"
             return
-        if len(bars) < required_history:
-            if self._module_enabled("ADVIKA"):
-                # Keep partial history so incremental REST overlap can fill the
-                # EMA200 warmup without repeatedly downloading the full window.
+        if len(bars) < 60:
+            if advika_enabled:
+                # Retain partial history for incremental EMA200 warmup.
                 self.candles[symbol] = bars
-            diagnostic.update(state="warming", reason="insufficient_history")
+            diagnostic.update(state="warming", reason="insufficient_legacy_history")
             diagnostic["last_bar_time"] = bars[-1].timestamp.isoformat()
-            log.info("5m candle history warming symbol=%s bars=%s required=%s", symbol, len(bars), required_history)
+            log.info("5m candle history warming symbol=%s bars=%s required=60", symbol, len(bars))
             return
+        if advika_enabled and len(bars) < ADVIKA_HISTORY_BARS:
+            # Legacy strategies remain available after their 60-bar warmup;
+            # Advika alone waits for the full EMA200 history.
+            self.candles[symbol] = bars
+            diagnostic["advika_state"] = "warming"
+            diagnostic["advika_required_bars"] = ADVIKA_HISTORY_BARS
         latest = bars[-1]
         diagnostic["last_bar_time"] = latest.timestamp.isoformat()
         diagnostic["reason"] = "validating_history"
@@ -1051,7 +1056,11 @@ class SignalEngine:
             if not already_stale:
                 log.warning("Skipping stale 5m candles symbol=%s lag_seconds=%.1f", symbol, candle_lag)
             return
-        validation_bars = bars[-history_limit:] if self._module_enabled("ADVIKA") else bars[-60:]
+        validation_bars = (
+            bars[-ADVIKA_HISTORY_BARS:]
+            if advika_enabled and len(bars) >= ADVIKA_HISTORY_BARS
+            else bars[-60:]
+        )
         if any((current.timestamp - previous.timestamp).total_seconds() != 300
                for previous, current in zip(validation_bars, validation_bars[1:])):
             diagnostic.update(state="gap", reason="missing_5m_intervals")
