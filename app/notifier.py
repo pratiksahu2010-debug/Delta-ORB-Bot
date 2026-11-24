@@ -50,7 +50,11 @@ class TelegramNotifier:
             action = str(signal.get("action", "")).upper()
             action_label = {
                 "TAKE_PARTIAL_50": "TARGET HIT — CLOSE 50% MANUALLY",
-                "EXIT_REMAINDER": "EXIT REMAINING POSITION MANUALLY",
+                "EXIT_REMAINDER": (
+                    "EXIT REMAINING 50% MANUALLY"
+                    if signal.get("partial_taken")
+                    else "EXIT FULL POSITION MANUALLY"
+                ),
             }.get(action, action or "POSITION UPDATE")
             symbol = html.escape(str(signal.get("symbol", "UNKNOWN")))
             side = html.escape(str(signal.get("side", "")))
