@@ -1051,9 +1051,9 @@ class SignalEngine:
             if not already_stale:
                 log.warning("Skipping stale 5m candles symbol=%s lag_seconds=%.1f", symbol, candle_lag)
             return
-        recent = bars[-60:]
+        validation_bars = bars[-history_limit:] if self._module_enabled("ADVIKA") else bars[-60:]
         if any((current.timestamp - previous.timestamp).total_seconds() != 300
-               for previous, current in zip(recent, recent[1:])):
+               for previous, current in zip(validation_bars, validation_bars[1:])):
             diagnostic.update(state="gap", reason="missing_5m_intervals")
             self.candles[symbol] = bars
             self.force_full_candle_refresh.add(symbol)
