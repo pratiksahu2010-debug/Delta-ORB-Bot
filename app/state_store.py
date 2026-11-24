@@ -72,7 +72,8 @@ class SignalStore:
                VALUES (%s, %s, 'pending', 0, %s, %s, %s) ON CONFLICT (signal_key) DO NOTHING"""
         )
         with self._connect() as db:
-            db.execute(sql, (signal_key, json.dumps(payload, separators=(",", ":")), now, now, now))
+            cur = db.execute(sql, (signal_key, json.dumps(payload, separators=(",", ":")), now, now, now))
+            return cur.rowcount == 1
 
     def due_alerts(self, limit: int = 50) -> list[tuple[str, dict]]:
         now = _utc_now().isoformat()
