@@ -1179,6 +1179,8 @@ class SignalEngine:
                 advika_result = evaluate_advika_choice(
                     advika_frame, symbol=symbol, btc_frame=btc_frame,
                     dead_hours_ist=getattr(self.settings, "advika_dead_hours_ist", ""),
+                    min_relative_volume=getattr(self.settings, "advika_min_relative_volume", 1.2),
+                    min_score=getattr(self.settings, "advika_min_score", 75),
                     diagnostics=advika_diagnostics,
                 )
                 self._record_strategy_evaluation(
