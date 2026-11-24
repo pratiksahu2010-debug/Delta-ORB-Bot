@@ -1398,9 +1398,20 @@ class SignalEngine:
                 continue
             try:
                 result = evaluate_advika_exit(position, frame)
+                # A missing result means the exit evaluator could not safely
+                # calculate (e.g. the full 240-bar contiguous history is not
+                # available). Do not advance last_processed_candle: the position
+                # must remain eligible for the next valid completed-candle frame.
+                if result is None:
+                    log.warning(
+                        "Advika position evaluation deferred; retaining last processed candle "
+                        "symbol=%s signal_key=%s candle=%s",
+                        symbol, signal_key, candle_time,
+                    )
+                    continue
                 status = str(position.get("status", "open"))
-                action = str((result or {}).get("action", "HOLD")).upper()
-                reason = str((result or {}).get("reason", "no_exit_update"))
+                action = str(result.get("action", "HOLD")).upper()
+                reason = str(result.get("reason", "no_exit_update"))
                 notify_action = None
                 if action == "TAKE_PARTIAL_50":
                     position["partial_taken"] = True
