@@ -1431,6 +1431,7 @@ class SignalEngine:
                         "price": current_price, "setup_time": str(position.get("setup_time", "")),
                         "candle_time": candle_time,
                         "partial_exit_percent": 50,
+                        "partial_taken": bool(position.get("partial_taken", False)),
                     })
                     queued_management_alert = True
                     if inserted:
@@ -1740,6 +1741,10 @@ class SignalEngine:
             state_store_ok = self.store.health()
         except Exception:
             state_store_ok = False
+        try:
+            advika_position_health = self.store.advika_position_health() if state_store_ok else None
+        except Exception:
+            advika_position_health = None
         quote_ages = {
             symbol: round((now - self.received_at[symbol]).total_seconds(), 3)
             for symbol in self.received_at
@@ -1907,7 +1912,7 @@ class SignalEngine:
             "telegram_delivery": dict(self.telegram_delivery),
             "advika_signal_delivery": dict(self.advika_signal_delivery),
             "advika_management_delivery": dict(self.advika_management_delivery),
-            "advika_positions": self.store.advika_position_health(),
+            "advika_positions": advika_position_health,
             "pending_setups": len(self.pending) + len(self.momentum_pending),
             "persisted_pending_setups": self.store.pending_setup_count() if state_store_ok else None,
             "setup_lifecycle": self.store.setup_lifecycle_health() if state_store_ok else None,
