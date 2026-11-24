@@ -154,11 +154,12 @@ def evaluate_advika_choice(
     if any(_in_interval(local_clock, start, end) for start, end in dead_hours):
         return _reject(diagnostics, "configured_dead_hour", {"candle_close_ist": close_time.astimezone(IST).isoformat()})
 
-    fields = ("ema20", "ema50", "ema200", "rsi14", "atr14", "adx14",
-              "macd", "macd_signal", "macd_hist", "volume_avg20")
+    # EMA50/EMA200, RSI and ADX are quality inputs, not mandatory gates.
+    # Missing optional quality indicators therefore contribute zero points.
+    fields = ("ema20", "atr14", "macd", "macd_signal", "macd_hist", "volume_avg20")
     prior = data.iloc[-3]
     if any(pd.isna(current[k]) for k in fields) or any(
-        pd.isna(previous[k]) for k in ("rsi14", "macd", "macd_signal", "macd_hist")
+        pd.isna(previous[k]) for k in ("macd", "macd_signal", "macd_hist")
     ) or any(pd.isna(prior[k]) for k in ("macd", "macd_signal", "macd_hist")):
         return _reject(diagnostics, "indicator_warmup_or_invalid")
     if not math.isfinite(float(min_relative_volume)) or min_relative_volume < 1.0:
@@ -234,28 +235,38 @@ def evaluate_advika_choice(
         (side == "LONG" and current.macd_hist > previous.macd_hist)
         or (side == "SHORT" and current.macd_hist < previous.macd_hist)
     ) else 0
-    trend_aligned = (
+    trend_aligned = pd.notna(current.ema200) and (
         current.close > current.ema200 if side == "LONG"
         else current.close < current.ema200
     )
     trend_points = 15 if trend_aligned else 0
+    rsi_available = pd.notna(current.rsi14) and pd.notna(previous.rsi14)
 
     if side == "LONG":
-        pullback_distance = float((data.low.iloc[-PULLBACK_LOOKBACK_BARS:] - current.ema50).abs().min())
-        rsi_points = 10 if 40 <= current.rsi14 <= 65 and current.rsi14 > previous.rsi14 else (
-            6 if current.rsi14 > previous.rsi14 else 0
+        pullback_distance = (
+            float((data.low.iloc[-PULLBACK_LOOKBACK_BARS:] - current.ema50).abs().min())
+            if pd.notna(current.ema50) else math.inf
+        )
+        rsi_points = 10 if rsi_available and 40 <= current.rsi14 <= 65 and current.rsi14 > previous.rsi14 else (
+            6 if rsi_available and current.rsi14 > previous.rsi14 else 0
         )
         candle_close_position = (current.close - current.low) / max(float(current.high - current.low), 1e-12)
         candle_direction_ok = current.close > current.open
     else:
-        pullback_distance = float((data.high.iloc[-PULLBACK_LOOKBACK_BARS:] - current.ema50).abs().min())
-        rsi_points = 10 if 35 <= current.rsi14 <= 60 and current.rsi14 < previous.rsi14 else (
-            6 if current.rsi14 < previous.rsi14 else 0
+        pullback_distance = (
+            float((data.high.iloc[-PULLBACK_LOOKBACK_BARS:] - current.ema50).abs().min())
+            if pd.notna(current.ema50) else math.inf
+        )
+        rsi_points = 10 if rsi_available and 35 <= current.rsi14 <= 60 and current.rsi14 < previous.rsi14 else (
+            6 if rsi_available and current.rsi14 < previous.rsi14 else 0
         )
         candle_close_position = (current.high - current.close) / max(float(current.high - current.low), 1e-12)
         candle_direction_ok = current.close < current.open
     pullback_points = 10 if pullback_distance <= 0.5 * atr_value else 6 if pullback_distance <= atr_value else 0
-    adx_value = float(current.adx14)
+    adx_value = (
+        float(current.adx14)
+        if pd.notna(current.adx14) and math.isfinite(float(current.adx14)) else 0.0
+    )
     adx_points = 0 if adx_value < 15 else 1 if adx_value < 20 else 3 if adx_value <= 25 else 5
     body_ratio = abs(float(current.close - current.open)) / max(float(current.high - current.low), 1e-12)
     candle_points = 5 if candle_direction_ok and body_ratio >= 0.5 and candle_close_position >= 0.75 else (
