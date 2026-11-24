@@ -245,3 +245,24 @@ def test_advika_position_state_survives_reopen_and_advances_idempotently(tmp_pat
     ) is True
     assert reopened.list_open_advika_positions("BTCUSD") == []
     assert reopened.advika_position_health()["closed"] == 1
+
+
+def test_advika_entry_outbox_and_position_are_persisted_atomically(tmp_path):
+    store = SignalStore(str(tmp_path / "state.sqlite3"))
+    key = "BTCUSD:ADVIKA:LONG:2026-11-24T08:00:00+00:00"
+    alert = {
+        "symbol": "BTCUSD", "strategy": "ADVIKA", "side": "LONG",
+        "entry": 100.0, "stop_loss": 98.0, "take_profit_1": 103.0,
+        "setup_time": "2026-11-24T08:00:00+00:00",
+    }
+    position = {
+        "symbol": "BTCUSD", "side": "LONG", "entry_price": 100.0,
+        "stop_loss": 98.0, "take_profit_1": 103.0, "trailing_stop": 98.0,
+        "partial_taken": False, "setup_time": alert["setup_time"],
+    }
+    assert store.enqueue_advika_signal(key, alert, position) == (True, True)
+    assert store.enqueue_advika_signal(key, alert, position) == (False, False)
+    assert store.due_alerts() == [(key, alert)]
+    active = store.list_open_advika_positions("BTCUSD")
+    assert len(active) == 1
+    assert active[0]["entry_price"] == 100.0
