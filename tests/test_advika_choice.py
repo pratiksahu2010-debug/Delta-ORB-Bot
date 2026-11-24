@@ -345,3 +345,37 @@ def test_advika_ema50_is_quality_score_not_entry_gate(monkeypatch):
     )
     assert result is not None
     assert result["quality_score_breakdown"]["ema50_pullback_quality"] == 0
+
+
+def test_advika_missing_adx_is_zero_score_not_a_rejection(monkeypatch):
+    _mock_indicators(monkeypatch, "LONG")
+    original = advika._with_indicators
+
+    def missing_adx(frame):
+        data = original(frame)
+        data["adx14"] = np.nan
+        return data
+
+    monkeypatch.setattr(advika, "_with_indicators", missing_adx)
+    result = advika.evaluate_advika_choice(_bars(), symbol="BTCUSD")
+    assert result is not None
+    assert result["quality_score_breakdown"]["adx_strength"] == 0
+
+
+def test_advika_missing_ema_filters_only_removes_quality_points(monkeypatch):
+    _mock_indicators(monkeypatch, "LONG")
+    original = advika._with_indicators
+
+    def missing_emas(frame):
+        data = original(frame)
+        data["ema50"] = np.nan
+        data["ema200"] = np.nan
+        return data
+
+    monkeypatch.setattr(advika, "_with_indicators", missing_emas)
+    result = advika.evaluate_advika_choice(
+        _bars(), symbol="BTCUSD", min_score=50,
+    )
+    assert result is not None
+    assert result["quality_score_breakdown"]["ema200_alignment"] == 0
+    assert result["quality_score_breakdown"]["ema50_pullback_quality"] == 0
