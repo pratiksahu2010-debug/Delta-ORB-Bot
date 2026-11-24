@@ -144,12 +144,13 @@ def test_advika_management_alert_format_is_explicitly_signal_only():
     message = TelegramNotifier._format_signal({
         "alert_type": "advika_management", "strategy": "ADVIKA",
         "symbol": "BTCUSD", "side": "LONG", "action": "TAKE_PARTIAL_50",
-        "reason": "target_1_5r_reached", "price": 103.0,
+        "reason": "target_1_5r_reached", "price": 103.0, "active_stop": 101.0,
         "candle_time": "2026-11-24T08:05:00+00:00",
     })
     assert "BTCUSD | Advika Choice" in message
     assert "CLOSE 50% MANUALLY" in message
     assert "Reference price: 103.0" in message
+    assert "Active stop: 101.0" in message
     assert "no order was placed" in message
 
 
