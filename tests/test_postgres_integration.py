@@ -306,7 +306,7 @@ def test_postgres_legacy_schema_migration_preserves_existing_records(postgres_ur
                            'sent',1,'a','a','a','b')"""
             )
 
-        assert apply_migrations(connect, "postgresql") == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+        assert apply_migrations(connect, "postgresql") == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
         with connect() as db:
             assert db.execute(
                 "SELECT COUNT(*) FROM alert_outbox WHERE signal_key='legacy-pg-key'"
