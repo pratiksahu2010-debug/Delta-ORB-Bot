@@ -46,6 +46,8 @@ def test_advika_long_uses_closed_candle_and_1_5r_target(monkeypatch):
     assert result["take_profit_1"] == 113
     assert result["risk_percent_cap"] == 1.0
     assert result["partial_exit_percent"] == 50
+    assert result["quality_score"] >= 75
+    assert result["relative_volume"] == 1.6
 
 
 def test_advika_short_is_the_reverse_setup(monkeypatch):
@@ -147,3 +149,52 @@ def test_advika_trailing_stop_is_monotonic_after_partial(monkeypatch):
     )
     assert result["action"] == "UPDATE_TRAILING_STOP"
     assert result["trailing_stop"] == 100
+
+
+
+def test_advika_adx_is_scored_not_a_mandatory_gate(monkeypatch):
+    _mock_indicators(monkeypatch, "LONG")
+    original = advika._with_indicators
+
+    def low_adx(frame):
+        data = original(frame)
+        data["adx14"] = 12.0
+        return data
+
+    monkeypatch.setattr(advika, "_with_indicators", low_adx)
+    diagnostics = {}
+    result = advika.evaluate_advika_choice(_bars(), symbol="BTCUSD", diagnostics=diagnostics)
+    assert result is not None
+    assert result["quality_score_breakdown"]["adx_strength"] == 0
+
+
+def test_advika_relative_volume_minimum_is_1_2x(monkeypatch):
+    _mock_indicators(monkeypatch, "LONG")
+    original = advika._with_indicators
+
+    def low_volume(frame):
+        data = original(frame)
+        data.loc[data.index[-1], "volume"] = 119.0
+        return data
+
+    monkeypatch.setattr(advika, "_with_indicators", low_volume)
+    diagnostics = {}
+    result = advika.evaluate_advika_choice(_bars(), symbol="BTCUSD", diagnostics=diagnostics)
+    assert result is None
+    assert diagnostics["reason"] == "signal_volume_below_minimum"
+
+
+def test_advika_minimum_quality_score_is_enforced(monkeypatch):
+    _mock_indicators(monkeypatch, "LONG")
+    diagnostics = {}
+    result = advika.evaluate_advika_choice(
+        _bars(), symbol="BTCUSD", min_score=100, diagnostics=diagnostics,
+    )
+    assert result is None
+    assert diagnostics["reason"] == "advika_score_below_minimum"
+
+
+def test_advika_settings_default_to_recommended_thresholds():
+    settings = Settings(bot_module="ADVIKA")
+    assert settings.advika_min_relative_volume == 1.2
+    assert settings.advika_min_score == 75
