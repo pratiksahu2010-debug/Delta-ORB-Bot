@@ -292,7 +292,8 @@ def evaluate_advika_choice(
         "setup_time": current.timestamp.isoformat(), "candle_close_time": close_time.isoformat(),
         "ema20": float(current.ema20), "macd": float(current.macd),
         "macd_signal": float(current.macd_signal), "macd_histogram": float(current.macd_hist),
-        "adx": float(current.adx14), "rsi": float(current.rsi14),
+        "adx": adx_value,
+        "rsi": float(current.rsi14) if pd.notna(current.rsi14) else None,
         "relative_volume": relative_volume,
         "quality_score": score, "minimum_quality_score": int(min_score),
         "quality_score_breakdown": {
