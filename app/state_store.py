@@ -75,6 +75,40 @@ class SignalStore:
             cur = db.execute(sql, (signal_key, json.dumps(payload, separators=(",", ":")), now, now, now))
             return cur.rowcount == 1
 
+    def enqueue_advika_signal(
+        self, signal_key: str, alert: dict, position: dict,
+    ) -> tuple[bool, bool]:
+        """Atomically persist an Advika entry alert and its paper position."""
+        now = _utc_now().isoformat()
+        setup_time = str(position["setup_time"])
+        encoded_alert = json.dumps(alert, separators=(",", ":"))
+        encoded_position = json.dumps(position, separators=(",", ":"))
+        if self.backend == "sqlite":
+            outbox_sql = """INSERT OR IGNORE INTO alert_outbox
+                (signal_key,payload_json,status,attempts,created_at,next_attempt_at,updated_at)
+                VALUES (?,?,'pending',0,?,?,?)"""
+            position_sql = """INSERT OR IGNORE INTO advika_positions
+                (signal_key,symbol,status,position_json,last_processed_candle,created_at,updated_at)
+                VALUES (?,?,'open',?,?,?,?)"""
+        else:
+            outbox_sql = """INSERT INTO alert_outbox
+                (signal_key,payload_json,status,attempts,created_at,next_attempt_at,updated_at)
+                VALUES (%s,%s,'pending',0,%s,%s,%s) ON CONFLICT(signal_key) DO NOTHING"""
+            position_sql = """INSERT INTO advika_positions
+                (signal_key,symbol,status,position_json,last_processed_candle,created_at,updated_at)
+                VALUES (%s,%s,'open',%s,%s,%s,%s) ON CONFLICT(signal_key) DO NOTHING"""
+        with self._connect() as db:
+            outbox_cur = db.execute(
+                outbox_sql, (signal_key, encoded_alert, now, now, now),
+            )
+            position_cur = db.execute(
+                position_sql, (
+                    signal_key, str(position["symbol"]), encoded_position,
+                    setup_time, now, now,
+                ),
+            )
+            return outbox_cur.rowcount == 1, position_cur.rowcount == 1
+
     def due_alerts(self, limit: int = 50) -> list[tuple[str, dict]]:
         now = _utc_now().isoformat()
         placeholder = "?" if self.backend == "sqlite" else "%s"
