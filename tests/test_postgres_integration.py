@@ -445,3 +445,35 @@ def test_postgres_canonical_neon_schema_uses_jsonb_timestamps_and_guards(postgre
             "trg_strategy_signals_immutable",
             "trg_strategy_state_events_append_only",
         }
+
+
+def test_postgres_advika_position_waits_for_entry_delivery_and_persists_updates(postgres_url):
+    from datetime import datetime, timezone
+
+    store = SignalStore("./unused.sqlite3", postgres_url)
+    key = f"ADVIKATEST:ADVIKA:LONG:{uuid.uuid4().hex}"
+    setup_time = datetime.now(timezone.utc).isoformat()
+    alert = {
+        "symbol": "ADVIKATEST", "strategy": "ADVIKA", "side": "LONG",
+        "entry": 100.0, "stop_loss": 98.0, "take_profit_1": 103.0,
+        "setup_time": setup_time,
+    }
+    position = {
+        "symbol": "ADVIKATEST", "side": "LONG", "entry_price": 100.0,
+        "stop_loss": 98.0, "take_profit_1": 103.0, "trailing_stop": 98.0,
+        "partial_taken": False, "setup_time": setup_time,
+    }
+    assert store.enqueue_advika_signal(key, alert, position) == (True, True)
+    assert store.list_open_advika_positions("ADVIKATEST") == []
+    claim = store.claim_due_alerts()[0]
+    assert store.mark_sent(key, alert, claim[2]) is True
+    assert store.activate_delivered_advika_positions() == 1
+
+    active = store.list_open_advika_positions("ADVIKATEST")
+    assert len(active) == 1 and active[0]["status"] == "open"
+    active[0]["partial_taken"] = True
+    active[0]["trailing_stop"] = 101.0
+    assert store.update_advika_position(
+        key, active[0], "partial", datetime.now(timezone.utc).isoformat(),
+    ) is True
+    assert store.advika_position_health()["partial"] == 1
