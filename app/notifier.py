@@ -104,6 +104,8 @@ class TelegramNotifier:
                 ("Risk cap", "1% of equity maximum; size from stop distance"),
                 ("Position size", signal.get("position_size_formula", "N/A")),
                 ("Management", "Take 50% at 1.5R; trail remaining 50% with EMA20"),
+                ("Setup", signal.get("setup_type", "N/A")),
+                ("Quality score", f"{signal.get('quality_score', 'N/A')}/100 (minimum {signal.get('minimum_quality_score', 75)})"),
                 ("Early exit", signal.get("early_exit", "N/A")),
                 ("ADX / RSI / RVOL", f"{signal.get('adx', 'N/A')} / {signal.get('rsi', 'N/A')} / {signal.get('relative_volume', 'N/A')}"),
             ])
