@@ -155,6 +155,11 @@ class SignalEngine:
         # Explain why each configured symbol is or is not candle-ready.
         self.candle_diagnostics: dict[str, dict] = {
             symbol: {"state": "pending", "reason": "not_fetched", "bars": 0,
+                     "legacy_state": "pending", "legacy_reason": "not_fetched",
+                     "legacy_required_bars": 60,
+                     "advika_state": "pending" if self._module_enabled("ADVIKA") else "disabled",
+                     "advika_reason": "not_fetched" if self._module_enabled("ADVIKA") else "module_disabled",
+                     "advika_required_bars": ADVIKA_HISTORY_BARS,
                      "last_attempt_at": None, "last_success_at": None,
                      "last_bar_time": None, "last_error": None,
                      "last_attempt_status": "not_attempted"}
@@ -1145,6 +1150,11 @@ class SignalEngine:
         if not bars:
             if symbol not in self.candles:
                 diagnostic.update(state="no_data", reason="empty_response", bars=0)
+                diagnostic.update(
+                    legacy_state="no_data", legacy_reason="empty_response",
+                    advika_state="no_data" if advika_enabled else "disabled",
+                    advika_reason="empty_response" if advika_enabled else "module_disabled",
+                )
             else:
                 diagnostic["reason"] = "empty_refresh_using_cached_data"
             return
@@ -1152,16 +1162,31 @@ class SignalEngine:
             if advika_enabled:
                 # Retain partial history for incremental EMA200 warmup.
                 self.candles[symbol] = bars
-            diagnostic.update(state="warming", reason="insufficient_legacy_history")
+            diagnostic.update(
+                state="warming", reason="insufficient_legacy_history",
+                legacy_state="warming", legacy_reason="insufficient_60_bar_history",
+                advika_state="warming" if advika_enabled else "disabled",
+                advika_reason="insufficient_240_bar_history" if advika_enabled else "module_disabled",
+            )
             diagnostic["last_bar_time"] = bars[-1].timestamp.isoformat()
             log.info("5m candle history warming symbol=%s bars=%s required=60", symbol, len(bars))
             return
+        diagnostic.update(
+            legacy_state="ready", legacy_reason="60_bar_history_available",
+            advika_state=(
+                "warming" if advika_enabled and len(bars) < ADVIKA_HISTORY_BARS
+                else "ready" if advika_enabled else "disabled"
+            ),
+            advika_reason=(
+                "insufficient_240_bar_history" if advika_enabled and len(bars) < ADVIKA_HISTORY_BARS
+                else "240_bar_history_available" if advika_enabled else "module_disabled"
+            ),
+            legacy_required_bars=60, advika_required_bars=ADVIKA_HISTORY_BARS,
+        )
         if advika_enabled and len(bars) < ADVIKA_HISTORY_BARS:
             # Legacy strategies remain available after their 60-bar warmup;
             # Advika alone waits for the full EMA200 history.
             self.candles[symbol] = bars
-            diagnostic["advika_state"] = "warming"
-            diagnostic["advika_required_bars"] = ADVIKA_HISTORY_BARS
         latest = bars[-1]
         diagnostic["last_bar_time"] = latest.timestamp.isoformat()
         diagnostic["reason"] = "validating_history"
@@ -1178,7 +1203,12 @@ class SignalEngine:
         candle_lag = (datetime.now(timezone.utc) - candle_close_time).total_seconds()
         if candle_lag > self.settings.max_candle_lag_seconds:
             already_stale = diagnostic.get("state") == "stale"
-            diagnostic.update(state="stale", reason="latest_completed_candle_too_old")
+            diagnostic.update(
+                state="stale", reason="latest_completed_candle_too_old",
+                legacy_state="stale", legacy_reason="latest_completed_candle_too_old",
+                advika_state="stale" if advika_enabled else "disabled",
+                advika_reason="latest_completed_candle_too_old" if advika_enabled else "module_disabled",
+            )
             # A stale tail must trigger a full-history recovery on the next poll;
             # repeatedly merging a stale incremental response cannot heal it.
             self.force_full_candle_refresh.add(symbol)
@@ -1194,7 +1224,12 @@ class SignalEngine:
         )
         if any((current.timestamp - previous.timestamp).total_seconds() != 300
                for previous, current in zip(validation_bars, validation_bars[1:])):
-            diagnostic.update(state="gap", reason="missing_5m_intervals")
+            diagnostic.update(
+                state="gap", reason="missing_5m_intervals",
+                legacy_state="gap", legacy_reason="missing_5m_intervals",
+                advika_state="gap" if advika_enabled else "disabled",
+                advika_reason="missing_5m_intervals" if advika_enabled else "module_disabled",
+            )
             self.candles[symbol] = bars
             self.force_full_candle_refresh.add(symbol)
             self._invalidate_pending_setups_for_symbol(
@@ -1203,7 +1238,19 @@ class SignalEngine:
             log.warning("Skipping strategy evaluation due to missing 5m intervals symbol=%s", symbol)
             return
         self.candles[symbol] = bars
-        diagnostic.update(state="ready", reason=f"{len(bars)}_contiguous_fresh_5m_candles")
+        diagnostic.update(
+            state="ready", reason=f"{len(bars)}_contiguous_fresh_5m_candles",
+            legacy_state="ready", legacy_reason="60_bar_history_available",
+            advika_state=(
+                "ready" if advika_enabled and len(bars) >= ADVIKA_HISTORY_BARS
+                else "warming" if advika_enabled else "disabled"
+            ),
+            advika_reason=(
+                "240_bar_history_available"
+                if advika_enabled and len(bars) >= ADVIKA_HISTORY_BARS
+                else "insufficient_240_bar_history" if advika_enabled else "module_disabled"
+            ),
+        )
         previous_evaluated = self.last_evaluated.get(symbol)
         if previous_evaluated is not None and latest.timestamp <= previous_evaluated:
             return
@@ -1883,6 +1930,45 @@ class SignalEngine:
             "MEX": pending_by_setup_type["MEX"],
             "ADVIKA": pending_by_setup_type["ADVIKA"],
         }
+        readiness_scope = list(self.active_symbols or self.configured_symbols)
+
+        def candle_readiness(state_key: str, enabled: bool, required_bars: int) -> dict:
+            states = {
+                symbol: self.candle_diagnostics.get(symbol, {})
+                for symbol in readiness_scope
+            }
+            ready_symbols = sorted(
+                symbol for symbol, item in states.items()
+                if item.get(state_key) == "ready"
+            )
+            warming_symbols = sorted(
+                symbol for symbol, item in states.items()
+                if item.get(state_key) == "warming"
+            )
+            not_ready_reasons = {
+                symbol: str(item.get(state_key.replace("_state", "_reason"))
+                            or item.get("reason") or item.get(state_key) or "unknown")
+                for symbol, item in states.items()
+                if enabled and item.get(state_key) != "ready"
+            }
+            return {
+                "enabled": enabled,
+                "required_bars": required_bars,
+                "scope": "active" if self.active_symbols else "configured_before_validation",
+                "scope_count": len(readiness_scope),
+                "ready_count": len(ready_symbols),
+                "warming_count": len(warming_symbols),
+                "not_ready_count": len(readiness_scope) - len(ready_symbols) if enabled else 0,
+                "ready_symbols": ready_symbols,
+                "warming_symbols": warming_symbols,
+                "not_ready_reasons": not_ready_reasons,
+            }
+
+        advika_enabled = self._module_enabled("ADVIKA")
+        candle_readiness = {
+            "legacy": candle_readiness("legacy_state", True, 60),
+            "advika": candle_readiness("advika_state", advika_enabled, ADVIKA_HISTORY_BARS),
+        }
         return {
             "websocket_connected": self.stream.connected,
             "websocket_reconnects": self.stream.reconnects,
@@ -1935,6 +2021,13 @@ class SignalEngine:
             "active_symbol_count": len(self.active_symbols),
             "unavailable_symbols": list(self.unavailable_symbols),
             "symbol_validation": dict(self.symbol_validation),
+            "candle_readiness": candle_readiness,
+            "legacy_candle_ready_count": candle_readiness["legacy"]["ready_count"],
+            "advika_candle_ready_count": candle_readiness["advika"]["ready_count"],
+            "advika_candle_warming_count": candle_readiness["advika"]["warming_count"],
+            "advika_candle_not_ready_count": candle_readiness["advika"]["not_ready_count"],
+            "advika_candle_warming_symbols": candle_readiness["advika"]["warming_symbols"],
+            "advika_candle_not_ready_reasons": candle_readiness["advika"]["not_ready_reasons"],
             "candle_ready_count": sum(1 for symbol in self.configured_symbols if self.candle_diagnostics.get(symbol, {}).get("state") == "ready"),
             "candle_warming_count": sum(1 for symbol in self.configured_symbols if self.candle_diagnostics.get(symbol, {}).get("state") == "warming"),
             "candle_no_data_count": sum(1 for symbol in self.configured_symbols if self.candle_diagnostics.get(symbol, {}).get("state") == "no_data"),
