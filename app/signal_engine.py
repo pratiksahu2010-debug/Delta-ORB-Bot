@@ -103,6 +103,9 @@ class SignalEngine:
         self.last_rest_quote_poll_at: str | None = None
         self.last_rest_quote_error: str | None = None
         self.candles: dict[str, list[Candle]] = {}
+        # Advika's alt-long filter shares one BTC EMA50 frame across the whole scan pass.
+        self._advika_btc_frame_source: list[Candle] | None = None
+        self._advika_btc_frame_cache: pd.DataFrame | None = None
         self.last_evaluated: dict[str, datetime] = {}
         self.scan_cycles = 0
         self.last_scan_cycle_at: str | None = None
@@ -952,6 +955,23 @@ class SignalEngine:
                     except Exception:
                         log.exception("Unable to persist Telegram retry schedule key=%s", key)
 
+    def _advika_btc_context_frame(self) -> pd.DataFrame | None:
+        """Build BTC's Advika context frame once per candle snapshot.
+
+        Every altcoin evaluation needs the same BTC EMA50 context. Rebuilding
+        an identical DataFrame for each symbol wastes CPU and allocations.
+        """
+        bars = self.candles.get("BTCUSD")
+        if not bars:
+            return None
+        if bars is not self._advika_btc_frame_source:
+            self._advika_btc_frame_cache = pd.DataFrame([{
+                "timestamp": bar.timestamp, "open": bar.open, "high": bar.high,
+                "low": bar.low, "close": bar.close, "volume": bar.volume,
+            } for bar in bars])
+            self._advika_btc_frame_source = bars
+        return self._advika_btc_frame_cache
+
     async def refresh_context(self, symbol: str) -> None:
         now = datetime.now(timezone.utc)
         # 15m context is informational: refresh once per completed 15m bucket,
@@ -1182,11 +1202,7 @@ class SignalEngine:
             if self._strategy_enabled("ADVIKA") and symbol in self.configured_symbol_set:
                 current_strategy = "ADVIKA"
                 advika_diagnostics = {}
-                btc_bars = self.candles.get("BTCUSD")
-                btc_frame = pd.DataFrame([{
-                    "timestamp": b.timestamp, "open": b.open, "high": b.high,
-                    "low": b.low, "close": b.close, "volume": b.volume,
-                } for b in btc_bars]) if btc_bars else None
+                btc_frame = self._advika_btc_context_frame()
                 advika_frame = pd.DataFrame([{
                     "timestamp": b.timestamp, "open": b.open, "high": b.high,
                     "low": b.low, "close": b.close, "volume": b.volume,

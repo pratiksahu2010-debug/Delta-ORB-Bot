@@ -3,7 +3,7 @@ import pytest
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
-from app.models import Quote
+from app.models import Candle, Quote
 from app.signal_engine import PendingSetup, SignalEngine
 
 
@@ -58,6 +58,25 @@ def make_setup(side, now):
 
 
 
+
+
+def test_advika_btc_frame_is_reused_until_candle_snapshot_changes(tmp_path):
+    engine, _notifier = make_engine(tmp_path)
+    now = datetime.now(timezone.utc)
+    first = [Candle(now, 100, 102, 99, 101, 10)]
+    engine.candles["BTCUSD"] = first
+
+    frame_one = engine._advika_btc_context_frame()
+    frame_two = engine._advika_btc_context_frame()
+    assert frame_one is frame_two
+    assert frame_one.iloc[-1]["close"] == 101
+
+    second = [Candle(now + timedelta(minutes=5), 101, 103, 100, 102, 12)]
+    engine.candles["BTCUSD"] = second
+    frame_three = engine._advika_btc_context_frame()
+    assert frame_three is not frame_one
+    assert frame_three.iloc[-1]["close"] == 102
+    asyncio.run(engine.rest.close())
 
 
 def test_engine_caches_symbol_universe_for_hot_paths(tmp_path):
