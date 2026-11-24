@@ -1416,8 +1416,11 @@ class SignalEngine:
 
                 if action in {"TAKE_PARTIAL_50", "EXIT_REMAINDER"}:
                     current_price = float(frame.iloc[-1]["close"])
-                    management_key = f"{signal_key}:management:{action}:{candle_time}"
-                    self.store.enqueue_alert(management_key, {
+                    # One idempotency key per position/action prevents repeated
+                    # partial or final-exit messages if a process crashes between
+                    # outbox insertion and position-state advancement.
+                    management_key = f"{signal_key}:management:{action}"
+                    inserted = self.store.enqueue_alert(management_key, {
                         "alert_type": "advika_management",
                         "strategy": "ADVIKA", "symbol": symbol,
                         "side": str(position.get("side", "")),
@@ -1430,8 +1433,9 @@ class SignalEngine:
                         "partial_exit_percent": 50,
                     })
                     queued_management_alert = True
-                    self.advika_management_delivery["queued"] += 1
-                    self.advika_management_delivery["last_queued_at"] = datetime.now(timezone.utc).isoformat()
+                    if inserted:
+                        self.advika_management_delivery["queued"] += 1
+                        self.advika_management_delivery["last_queued_at"] = datetime.now(timezone.utc).isoformat()
                 self.store.update_advika_position(
                     signal_key, position, status, candle_time,
                 )
