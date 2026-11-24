@@ -99,8 +99,8 @@ def test_advika_requires_240_contiguous_closed_candles():
 
 def test_advika_module_is_independent_and_does_not_change_all_mode():
     all_settings = Settings(bot_module="ALL")
-    assert all_settings.enabled_modules == ["ORB", "MEX"]
-    assert not all_settings.module_enabled("ADVIKA")
+    assert all_settings.enabled_modules == ["ORB", "MEX", "ADVIKA"]
+    assert all_settings.module_enabled("ADVIKA")
 
     advika_settings = Settings(bot_module="ADVIKA")
     assert advika_settings.enabled_modules == ["ADVIKA"]
@@ -112,3 +112,10 @@ def test_advika_module_is_independent_and_does_not_change_all_mode():
 def test_advika_dead_hour_configuration_is_validated():
     settings = Settings(bot_module="ADVIKA", advika_dead_hours_ist="00:00-05:00,12:00-13:00")
     settings.validate_safety()
+
+
+def test_advika_can_be_disabled_without_disabling_other_modules():
+    settings = Settings(bot_module="ORB", advika_enabled=False)
+    assert settings.enabled_modules == ["ORB"]
+    assert not settings.strategy_enabled("ADVIKA")
+    assert settings.strategy_enabled("ORB")
