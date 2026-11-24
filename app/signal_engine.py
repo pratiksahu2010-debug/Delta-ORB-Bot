@@ -1021,10 +1021,11 @@ class SignalEngine:
                 diagnostic["reason"] = "empty_refresh_using_cached_data"
             return
         if len(bars) < required_history:
-            if symbol not in self.candles:
-                diagnostic.update(state="warming", reason="insufficient_history")
-            else:
-                diagnostic["reason"] = "insufficient_refresh_using_cached_data"
+            if self._module_enabled("ADVIKA"):
+                # Keep partial history so incremental REST overlap can fill the
+                # EMA200 warmup without repeatedly downloading the full window.
+                self.candles[symbol] = bars
+            diagnostic.update(state="warming", reason="insufficient_history")
             diagnostic["last_bar_time"] = bars[-1].timestamp.isoformat()
             log.info("5m candle history warming symbol=%s bars=%s required=%s", symbol, len(bars), required_history)
             return
@@ -1062,7 +1063,7 @@ class SignalEngine:
             log.warning("Skipping strategy evaluation due to missing 5m intervals symbol=%s", symbol)
             return
         self.candles[symbol] = bars
-        diagnostic.update(state="ready", reason="60_plus_contiguous_fresh_candles")
+        diagnostic.update(state="ready", reason=f"{len(bars)}_contiguous_fresh_5m_candles")
         previous_evaluated = self.last_evaluated.get(symbol)
         if previous_evaluated is not None and latest.timestamp <= previous_evaluated:
             return
