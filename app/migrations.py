@@ -611,6 +611,7 @@ MIGRATIONS: tuple[tuple[int, str, Callable], ...] = (
     (8, "create_durable_signal_outcomes", _migration_8_create_signal_outcomes),
     (9, "create_point_in_time_shadow_ml_tables", _migration_9_create_shadow_ml_tables),
     (10, "add_canonical_neon_storage_schema", _migration_10_add_canonical_neon_storage),
+    (11, "create_advika_signal_only_positions", _migration_11_create_advika_signal_positions),
 )
 
 
