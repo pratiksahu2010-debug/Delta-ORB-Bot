@@ -447,7 +447,7 @@ def test_advika_swing_stop_is_buffered_beyond_long_pullback(monkeypatch):
     assert result["stop_loss"] == 108.7
     assert result["stop_loss"] < 108.8
     assert np.isclose(result["risk_distance"], 1.3)
-    assert result["take_profit_1"] == 111.95
+    assert np.isclose(result["take_profit_1"], 111.95)
 
 
 def test_advika_swing_stop_is_buffered_beyond_short_pullback(monkeypatch):
@@ -465,7 +465,7 @@ def test_advika_swing_stop_is_buffered_beyond_short_pullback(monkeypatch):
     assert result["stop_loss"] == 91.6
     assert result["stop_loss"] > 91.5
     assert np.isclose(result["risk_distance"], 1.6)
-    assert result["take_profit_1"] == 87.6
+    assert np.isclose(result["take_profit_1"], 87.6)
 
 
 def test_advika_rejects_pullback_stop_wider_than_two_atr(monkeypatch):
