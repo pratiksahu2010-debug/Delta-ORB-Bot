@@ -29,7 +29,7 @@ def _mock_indicators(monkeypatch, side="LONG"):
             data.loc[data.index[-1], ["open", "high", "low", "close", "volume"]] = [109, 111, 104, 110, 160]
             data.loc[data.index[-1], ["macd", "macd_signal", "macd_hist", "rsi14"]] = [-0.05, -0.1, 0.05, 47]
         else:
-            data.loc[data.index[-1], ["ema20", "ema50", "ema200"]] = [92, 95, 100]
+            data.loc[data.index[-1], ["ema20", "ema50", "ema200"]] = [90.8, 95, 100]
             data.loc[data.index[-2], ["macd", "macd_signal", "macd_hist", "rsi14"]] = [0.2, 0.1, 0.1, 55]
             data.loc[data.index[-1], ["open", "high", "low", "close", "volume"]] = [91, 96, 89, 90, 160]
             data.loc[data.index[-1], ["macd", "macd_signal", "macd_hist", "rsi14"]] = [0.05, 0.1, -0.05, 53]
@@ -381,3 +381,42 @@ def test_advika_missing_ema_filters_only_removes_quality_points(monkeypatch):
     assert result is not None
     assert result["quality_score_breakdown"]["ema200_alignment"] == 0
     assert result["quality_score_breakdown"]["ema50_pullback_quality"] == 0
+
+
+def test_advika_rejects_late_entry_too_far_from_ema20(monkeypatch):
+    _mock_indicators(monkeypatch, "LONG")
+    original = advika._with_indicators
+
+    def extended(frame):
+        data = original(frame)
+        data.loc[data.index[-1], "ema20"] = 108.5
+        return data
+
+    monkeypatch.setattr(advika, "_with_indicators", extended)
+    diagnostics = {}
+    result = advika.evaluate_advika_choice(
+        _bars(), symbol="BTCUSD", diagnostics=diagnostics,
+    )
+    assert result is None
+    assert diagnostics["reason"] == "entry_too_extended_from_ema20"
+
+
+def test_advika_continuation_requires_real_price_pullback(monkeypatch):
+    _mock_indicators(monkeypatch, "LONG")
+    original = advika._with_indicators
+
+    def no_price_pullback(frame):
+        data = original(frame)
+        data.loc[data.index[-3], ["macd", "macd_signal", "macd_hist"]] = [0.2, 0.1, 0.10]
+        data.loc[data.index[-2], ["macd", "macd_signal", "macd_hist"]] = [0.2, 0.1, 0.06]
+        data.loc[data.index[-1], ["macd", "macd_signal", "macd_hist"]] = [0.24, 0.1, 0.14]
+        # Previous candle remains bullish: no counter-direction pullback.
+        return data
+
+    monkeypatch.setattr(advika, "_with_indicators", no_price_pullback)
+    diagnostics = {}
+    result = advika.evaluate_advika_choice(
+        _bars(), symbol="BTCUSD", min_score=50, diagnostics=diagnostics,
+    )
+    assert result is None
+    assert diagnostics["reason"] == "mandatory_macd_trigger_failed"
