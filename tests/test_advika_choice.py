@@ -25,10 +25,20 @@ def _mock_indicators(monkeypatch, side="LONG"):
         }.items():
             data[name] = value
         if side == "LONG":
+            data.loc[data.index[-4:-1], ["open", "high", "low", "close"]] = [
+                [109.4, 110.2, 109.0, 109.6],
+                [109.5, 110.3, 109.1, 109.7],
+                [109.6, 110.4, 109.2, 109.8],
+            ]
             data.loc[data.index[-2], "rsi14"] = 45.0
             data.loc[data.index[-1], ["open", "high", "low", "close", "volume"]] = [109, 111, 104, 110, 160]
             data.loc[data.index[-1], ["macd", "macd_signal", "macd_hist", "rsi14"]] = [-0.05, -0.1, 0.05, 47]
         else:
+            data.loc[data.index[-4:-1], ["open", "high", "low", "close"]] = [
+                [90.4, 91.0, 89.8, 90.2],
+                [90.5, 91.1, 89.9, 90.3],
+                [90.6, 91.2, 90.0, 90.4],
+            ]
             data.loc[data.index[-1], ["ema20", "ema50", "ema200"]] = [90.8, 95, 100]
             data.loc[data.index[-2], ["macd", "macd_signal", "macd_hist", "rsi14"]] = [0.2, 0.1, 0.1, 55]
             data.loc[data.index[-1], ["open", "high", "low", "close", "volume"]] = [91, 96, 89, 90, 160]
@@ -286,7 +296,7 @@ def test_advika_long_pullback_continuation_setup(monkeypatch):
         data.loc[data.index[-3], ["macd", "macd_signal", "macd_hist"]] = [0.2, 0.1, 0.10]
         data.loc[data.index[-2], ["macd", "macd_signal", "macd_hist"]] = [0.2, 0.1, 0.06]
         data.loc[data.index[-1], ["macd", "macd_signal", "macd_hist"]] = [0.24, 0.1, 0.14]
-        data.loc[data.index[-2], ["open", "high", "low", "close"]] = [101.2, 112.0, 100.4, 100.8]
+        data.loc[data.index[-2], ["open", "high", "low", "close"]] = [109.8, 110.5, 108.8, 109.2]
         return data
 
     monkeypatch.setattr(advika, "_with_indicators", continuation)
@@ -305,7 +315,7 @@ def test_advika_short_pullback_continuation_setup(monkeypatch):
         data.loc[data.index[-3], ["macd", "macd_signal", "macd_hist"]] = [-0.2, -0.1, -0.10]
         data.loc[data.index[-2], ["macd", "macd_signal", "macd_hist"]] = [-0.2, -0.1, -0.06]
         data.loc[data.index[-1], ["macd", "macd_signal", "macd_hist"]] = [-0.24, -0.1, -0.14]
-        data.loc[data.index[-2], ["open", "high", "low", "close"]] = [100.8, 101.5, 88.0, 101.2]
+        data.loc[data.index[-2], ["open", "high", "low", "close"]] = [90.8, 91.5, 89.8, 91.0]
         return data
 
     monkeypatch.setattr(advika, "_with_indicators", continuation)
@@ -420,3 +430,75 @@ def test_advika_continuation_requires_real_price_pullback(monkeypatch):
     )
     assert result is None
     assert diagnostics["reason"] == "mandatory_macd_trigger_failed"
+
+
+def test_advika_swing_stop_is_buffered_beyond_long_pullback(monkeypatch):
+    _mock_indicators(monkeypatch, "LONG")
+    original = advika._with_indicators
+
+    def pullback(frame):
+        data = original(frame)
+        data.loc[data.index[-2], ["open", "high", "low", "close"]] = [109.8, 110.5, 108.8, 109.2]
+        return data
+
+    monkeypatch.setattr(advika, "_with_indicators", pullback)
+    result = advika.evaluate_advika_choice(_bars(), symbol="BTCUSD", min_score=50)
+    assert result is not None
+    assert result["stop_loss"] == 108.7
+    assert result["stop_loss"] < 108.8
+    assert np.isclose(result["risk_distance"], 1.3)
+    assert np.isclose(result["take_profit_1"], 111.95)
+
+
+def test_advika_swing_stop_is_buffered_beyond_short_pullback(monkeypatch):
+    _mock_indicators(monkeypatch, "SHORT")
+    original = advika._with_indicators
+
+    def pullback(frame):
+        data = original(frame)
+        data.loc[data.index[-2], ["open", "high", "low", "close"]] = [90.8, 91.5, 89.8, 91.0]
+        return data
+
+    monkeypatch.setattr(advika, "_with_indicators", pullback)
+    result = advika.evaluate_advika_choice(_bars(), symbol="BTCUSD", min_score=50)
+    assert result is not None
+    assert result["stop_loss"] == 91.6
+    assert result["stop_loss"] > 91.5
+    assert np.isclose(result["risk_distance"], 1.6)
+    assert np.isclose(result["take_profit_1"], 87.6)
+
+
+def test_advika_rejects_pullback_stop_wider_than_two_atr(monkeypatch):
+    _mock_indicators(monkeypatch, "LONG")
+    original = advika._with_indicators
+
+    def deep_pullback(frame):
+        data = original(frame)
+        data.loc[data.index[-2], ["open", "high", "low", "close"]] = [109.8, 110.5, 107.0, 109.2]
+        return data
+
+    monkeypatch.setattr(advika, "_with_indicators", deep_pullback)
+    diagnostics = {}
+    result = advika.evaluate_advika_choice(
+        _bars(), symbol="BTCUSD", min_score=50, diagnostics=diagnostics,
+    )
+    assert result is None
+    assert diagnostics["reason"] == "pullback_stop_exceeds_maximum_atr"
+
+
+def test_advika_ema50_score_ignores_old_non_pullback_touch(monkeypatch):
+    _mock_indicators(monkeypatch, "LONG")
+    original = advika._with_indicators
+
+    def old_touch(frame):
+        data = original(frame)
+        data.loc[data.index[-6], "low"] = data.loc[data.index[-1], "ema50"]
+        data.loc[data.index[-1], "ema50"] = 109.0
+        return data
+
+    monkeypatch.setattr(advika, "_with_indicators", old_touch)
+    result = advika.evaluate_advika_choice(
+        _bars(), symbol="BTCUSD", min_score=50,
+    )
+    assert result is not None
+    assert result["quality_score_breakdown"]["ema50_pullback_quality"] == 0
