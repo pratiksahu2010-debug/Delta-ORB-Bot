@@ -268,7 +268,7 @@ def evaluate_advika_choice(
         recent_pullback.loc[recent_pullback.close > recent_pullback.open]
     )
     if side == "LONG":
-        swing_extreme = float(counter_pullback.low.min()) if not counter_pullback.empty else entry - 2 * atr_value
+        swing_extreme = float(counter_pullback.low.min()) if not counter_pullback.empty else entry - (MAX_STOP_ATR - STOP_BUFFER_ATR) * atr_value
         buffered_stop = swing_extreme - STOP_BUFFER_ATR * atr_value
         risk = max(entry - buffered_stop, MIN_STOP_ATR * atr_value)
         if risk > MAX_STOP_ATR * atr_value:
@@ -278,7 +278,7 @@ def evaluate_advika_choice(
             })
         stop = entry - risk
     else:
-        swing_extreme = float(counter_pullback.high.max()) if not counter_pullback.empty else entry + 2 * atr_value
+        swing_extreme = float(counter_pullback.high.max()) if not counter_pullback.empty else entry + (MAX_STOP_ATR - STOP_BUFFER_ATR) * atr_value
         buffered_stop = swing_extreme + STOP_BUFFER_ATR * atr_value
         risk = max(buffered_stop - entry, MIN_STOP_ATR * atr_value)
         if risk > MAX_STOP_ATR * atr_value:
@@ -371,7 +371,7 @@ def evaluate_advika_choice(
             "adx_strength": adx_points, "signal_candle": candle_points,
             "risk_reward": rr_points,
         },
-        "pullback_extreme": pullback_low if side == "LONG" else pullback_high,
+        "pullback_extreme": swing_extreme,
     }
     if diagnostics is not None:
         diagnostics.clear()
