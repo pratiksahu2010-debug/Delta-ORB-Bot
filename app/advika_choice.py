@@ -201,8 +201,10 @@ def evaluate_advika_choice(
         and current.macd_hist < previous.macd_hist
         and short_candle_confirm
     )
-    # A continuation is valid only after a real counter-direction price candle
-    # and a close through that candle's extreme, with MACD momentum restarting.
+    # Earlier continuation entry: require a genuine counter-direction candle,
+    # renewed MACD histogram momentum, and a reclaim of its body (not its full
+    # wick extreme). This avoids waiting for a late breakout while retaining a
+    # completed directional candle as confirmation.
     long_continuation = (
         previous.macd > previous.macd_signal
         and current.macd > current.macd_signal
@@ -210,7 +212,7 @@ def evaluate_advika_choice(
         and current.macd_hist > previous.macd_hist > 0
         and previous.close < previous.open
         and current.close > current.open
-        and current.close > previous.high
+        and current.close > previous.open
     )
     short_continuation = (
         previous.macd < previous.macd_signal
@@ -219,7 +221,7 @@ def evaluate_advika_choice(
         and current.macd_hist < previous.macd_hist < 0
         and previous.close > previous.open
         and current.close < current.open
-        and current.close < previous.low
+        and current.close < previous.open
     )
     side = (
         "LONG" if long_cross or long_continuation

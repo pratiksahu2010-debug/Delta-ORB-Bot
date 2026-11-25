@@ -286,7 +286,7 @@ def test_advika_long_pullback_continuation_setup(monkeypatch):
         data.loc[data.index[-3], ["macd", "macd_signal", "macd_hist"]] = [0.2, 0.1, 0.10]
         data.loc[data.index[-2], ["macd", "macd_signal", "macd_hist"]] = [0.2, 0.1, 0.06]
         data.loc[data.index[-1], ["macd", "macd_signal", "macd_hist"]] = [0.24, 0.1, 0.14]
-        data.loc[data.index[-2], ["open", "high", "low", "close"]] = [101.2, 101.5, 100.4, 100.8]
+        data.loc[data.index[-2], ["open", "high", "low", "close"]] = [101.2, 112.0, 100.4, 100.8]
         return data
 
     monkeypatch.setattr(advika, "_with_indicators", continuation)
@@ -305,7 +305,7 @@ def test_advika_short_pullback_continuation_setup(monkeypatch):
         data.loc[data.index[-3], ["macd", "macd_signal", "macd_hist"]] = [-0.2, -0.1, -0.10]
         data.loc[data.index[-2], ["macd", "macd_signal", "macd_hist"]] = [-0.2, -0.1, -0.06]
         data.loc[data.index[-1], ["macd", "macd_signal", "macd_hist"]] = [-0.24, -0.1, -0.14]
-        data.loc[data.index[-2], ["open", "high", "low", "close"]] = [100.8, 101.5, 100.4, 101.2]
+        data.loc[data.index[-2], ["open", "high", "low", "close"]] = [100.8, 101.5, 88.0, 101.2]
         return data
 
     monkeypatch.setattr(advika, "_with_indicators", continuation)
