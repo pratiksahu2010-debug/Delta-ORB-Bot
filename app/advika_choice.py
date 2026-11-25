@@ -176,29 +176,50 @@ def evaluate_advika_choice(
 
     pullback_low = float(data.low.iloc[-PULLBACK_LOOKBACK_BARS:].min())
     pullback_high = float(data.high.iloc[-PULLBACK_LOOKBACK_BARS:].max())
+    candle_range = max(float(current.high - current.low), 1e-12)
+    long_candle_confirm = (
+        current.close > current.open
+        and (current.close - current.low) / candle_range >= 0.60
+    )
+    short_candle_confirm = (
+        current.close < current.open
+        and (current.high - current.close) / candle_range >= 0.60
+    )
     long_cross = (
         previous.macd <= previous.macd_signal
         and current.macd > current.macd_signal
         and current.macd_hist > 0
+        and current.macd > previous.macd
+        and current.macd_hist > previous.macd_hist
+        and long_candle_confirm
     )
     short_cross = (
         previous.macd >= previous.macd_signal
         and current.macd < current.macd_signal
         and current.macd_hist < 0
+        and current.macd < previous.macd
+        and current.macd_hist < previous.macd_hist
+        and short_candle_confirm
     )
-    # Continuation requires an established MACD direction, a contracting
-    # pullback histogram, then renewed expansion on the latest closed candle.
+    # A continuation is valid only after a real counter-direction price candle
+    # and a close through that candle's extreme, with MACD momentum restarting.
     long_continuation = (
         previous.macd > previous.macd_signal
         and current.macd > current.macd_signal
         and previous.macd_hist <= prior.macd_hist
         and current.macd_hist > previous.macd_hist > 0
+        and previous.close < previous.open
+        and current.close > current.open
+        and current.close > previous.high
     )
     short_continuation = (
         previous.macd < previous.macd_signal
         and current.macd < current.macd_signal
         and previous.macd_hist >= prior.macd_hist
         and current.macd_hist < previous.macd_hist < 0
+        and previous.close > previous.open
+        and current.close < current.open
+        and current.close < previous.low
     )
     side = (
         "LONG" if long_cross or long_continuation
@@ -212,6 +233,17 @@ def evaluate_advika_choice(
             "previous_macd_hist": previous.macd_hist,
             "relative_volume": current.volume / current.volume_avg20,
         })
+    entry, atr_value = float(current.close), float(current.atr14)
+    # Avoid buying/selling after price has already stretched too far from EMA20.
+    entry_extension_atr = (
+        max(0.0, (entry - float(current.ema20)) / atr_value)
+        if side == "LONG" else
+        max(0.0, (float(current.ema20) - entry) / atr_value)
+    )
+    if entry_extension_atr > 1.2:
+        return _reject(diagnostics, "entry_too_extended_from_ema20", {
+            "extension_atr": entry_extension_atr, "maximum_extension_atr": 1.2,
+        })
     setup_type = (
         "MACD_CROSSOVER" if (long_cross or short_cross)
         else "MACD_PULLBACK_CONTINUATION"
@@ -219,7 +251,6 @@ def evaluate_advika_choice(
     if side == "LONG" and symbol.upper() != "BTCUSD" and not _btc_above_ema50(btc_frame, current.timestamp):
         return _reject(diagnostics, "btc_ema50_filter_failed_for_alt_long")
 
-    entry, atr_value = float(current.close), float(current.atr14)
     stop = max(entry - 2 * atr_value, pullback_low) if side == "LONG" else min(entry + 2 * atr_value, pullback_high)
     risk = entry - stop if side == "LONG" else stop - entry
     if not math.isfinite(risk) or risk <= 0:
@@ -290,8 +321,9 @@ def evaluate_advika_choice(
         "setup_type": setup_type,
         "reason": f"Advika Choice {side}: {setup_type} MACD(12,26,9) + relative volume {relative_volume:.2f}x; quality {score}/100",
         "setup_time": current.timestamp.isoformat(), "candle_close_time": close_time.isoformat(),
-        "ema20": float(current.ema20), "macd": float(current.macd),
-        "macd_signal": float(current.macd_signal), "macd_histogram": float(current.macd_hist),
+        "ema20": float(current.ema20), "entry_extension_atr": entry_extension_atr,
+        "macd": float(current.macd), "macd_signal": float(current.macd_signal),
+        "macd_histogram": float(current.macd_hist),
         "adx": adx_value,
         "rsi": float(current.rsi14) if pd.notna(current.rsi14) else None,
         "relative_volume": relative_volume,
