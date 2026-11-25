@@ -14,6 +14,10 @@ IST = ZoneInfo("Asia/Kolkata")
 FUNDING_TIMES_IST = (time(5, 30), time(13, 30), time(21, 30))
 HISTORY_BARS = 240
 PULLBACK_LOOKBACK_BARS = 5
+PULLBACK_SCORE_LOOKBACK_BARS = 3
+STOP_BUFFER_ATR = 0.1
+MIN_STOP_ATR = 0.5
+MAX_STOP_ATR = 2.0
 BAR_SECONDS = 300
 
 
@@ -253,8 +257,36 @@ def evaluate_advika_choice(
     if side == "LONG" and symbol.upper() != "BTCUSD" and not _btc_above_ema50(btc_frame, current.timestamp):
         return _reject(diagnostics, "btc_ema50_filter_failed_for_alt_long")
 
-    stop = max(entry - 2 * atr_value, pullback_low) if side == "LONG" else min(entry + 2 * atr_value, pullback_high)
-    risk = entry - stop if side == "LONG" else stop - entry
+    # Anchor risk beyond a genuine counter-direction pullback swing, not on
+    # its wick. If no such candle exists, use the 2-ATR fallback. Reject a
+    # swing that would require more than 2 ATR rather than silently moving the
+    # stop inside the swing; also prevent microscopic (<0.5 ATR) risk.
+    recent_pullback = data.iloc[-(PULLBACK_SCORE_LOOKBACK_BARS + 1):-1]
+    counter_pullback = (
+        recent_pullback.loc[recent_pullback.close < recent_pullback.open]
+        if side == "LONG" else
+        recent_pullback.loc[recent_pullback.close > recent_pullback.open]
+    )
+    if side == "LONG":
+        swing_extreme = float(counter_pullback.low.min()) if not counter_pullback.empty else entry - 2 * atr_value
+        buffered_stop = swing_extreme - STOP_BUFFER_ATR * atr_value
+        risk = max(entry - buffered_stop, MIN_STOP_ATR * atr_value)
+        if risk > MAX_STOP_ATR * atr_value:
+            return _reject(diagnostics, "pullback_stop_exceeds_maximum_atr", {
+                "stop_distance_atr": risk / atr_value,
+                "maximum_stop_atr": MAX_STOP_ATR,
+            })
+        stop = entry - risk
+    else:
+        swing_extreme = float(counter_pullback.high.max()) if not counter_pullback.empty else entry + 2 * atr_value
+        buffered_stop = swing_extreme + STOP_BUFFER_ATR * atr_value
+        risk = max(buffered_stop - entry, MIN_STOP_ATR * atr_value)
+        if risk > MAX_STOP_ATR * atr_value:
+            return _reject(diagnostics, "pullback_stop_exceeds_maximum_atr", {
+                "stop_distance_atr": risk / atr_value,
+                "maximum_stop_atr": MAX_STOP_ATR,
+            })
+        stop = entry + risk
     if not math.isfinite(risk) or risk <= 0:
         return _reject(diagnostics, "invalid_pullback_stop_distance")
     target = entry + 1.5 * risk if side == "LONG" else entry - 1.5 * risk
@@ -275,10 +307,12 @@ def evaluate_advika_choice(
     trend_points = 15 if trend_aligned else 0
     rsi_available = pd.notna(current.rsi14) and pd.notna(previous.rsi14)
 
+    # EMA50 quality belongs to the actual recent counter-direction pullback,
+    # never to the signal candle or an unrelated older candle in a wide window.
     if side == "LONG":
         pullback_distance = (
-            float((data.low.iloc[-PULLBACK_LOOKBACK_BARS:] - current.ema50).abs().min())
-            if pd.notna(current.ema50) else math.inf
+            float((counter_pullback.low - current.ema50).abs().min())
+            if pd.notna(current.ema50) and not counter_pullback.empty else math.inf
         )
         rsi_points = 10 if rsi_available and 40 <= current.rsi14 <= 65 and current.rsi14 > previous.rsi14 else (
             6 if rsi_available and current.rsi14 > previous.rsi14 else 0
@@ -287,8 +321,8 @@ def evaluate_advika_choice(
         candle_direction_ok = current.close > current.open
     else:
         pullback_distance = (
-            float((data.high.iloc[-PULLBACK_LOOKBACK_BARS:] - current.ema50).abs().min())
-            if pd.notna(current.ema50) else math.inf
+            float((counter_pullback.high - current.ema50).abs().min())
+            if pd.notna(current.ema50) and not counter_pullback.empty else math.inf
         )
         rsi_points = 10 if rsi_available and 35 <= current.rsi14 <= 60 and current.rsi14 < previous.rsi14 else (
             6 if rsi_available and current.rsi14 < previous.rsi14 else 0
