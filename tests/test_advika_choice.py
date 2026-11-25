@@ -18,7 +18,7 @@ def _mock_indicators(monkeypatch, side="LONG"):
     def prepare(frame):
         data = frame.copy()
         for name, value in {
-            "ema20": 108.0, "ema50": 105.0, "ema200": 100.0,
+            "ema20": 109.2, "ema50": 105.0, "ema200": 100.0,
             "rsi14": 45.0, "atr14": 1.0, "adx14": 30.0,
             "macd": -0.2, "macd_signal": -0.1, "macd_hist": -0.1,
             "volume_avg20": 100.0,
@@ -219,7 +219,7 @@ def test_advika_partial_target_starts_ema20_trailing_stop(monkeypatch):
         _bars(),
     )
     assert result["action"] == "TAKE_PARTIAL_50"
-    assert result["trailing_stop"] == 108.0
+    assert result["trailing_stop"] == 109.2
 
 
 def test_advika_reports_noncontiguous_history_separately():
@@ -286,6 +286,7 @@ def test_advika_long_pullback_continuation_setup(monkeypatch):
         data.loc[data.index[-3], ["macd", "macd_signal", "macd_hist"]] = [0.2, 0.1, 0.10]
         data.loc[data.index[-2], ["macd", "macd_signal", "macd_hist"]] = [0.2, 0.1, 0.06]
         data.loc[data.index[-1], ["macd", "macd_signal", "macd_hist"]] = [0.24, 0.1, 0.14]
+        data.loc[data.index[-2], ["open", "high", "low", "close"]] = [101.2, 101.5, 100.4, 100.8]
         return data
 
     monkeypatch.setattr(advika, "_with_indicators", continuation)
@@ -304,6 +305,7 @@ def test_advika_short_pullback_continuation_setup(monkeypatch):
         data.loc[data.index[-3], ["macd", "macd_signal", "macd_hist"]] = [-0.2, -0.1, -0.10]
         data.loc[data.index[-2], ["macd", "macd_signal", "macd_hist"]] = [-0.2, -0.1, -0.06]
         data.loc[data.index[-1], ["macd", "macd_signal", "macd_hist"]] = [-0.24, -0.1, -0.14]
+        data.loc[data.index[-2], ["open", "high", "low", "close"]] = [100.8, 101.5, 100.4, 101.2]
         return data
 
     monkeypatch.setattr(advika, "_with_indicators", continuation)
