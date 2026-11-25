@@ -13,7 +13,6 @@ from .indicators import adx, atr, ema, rsi
 IST = ZoneInfo("Asia/Kolkata")
 FUNDING_TIMES_IST = (time(5, 30), time(13, 30), time(21, 30))
 HISTORY_BARS = 240
-PULLBACK_LOOKBACK_BARS = 5
 PULLBACK_SCORE_LOOKBACK_BARS = 3
 STOP_BUFFER_ATR = 0.1
 MIN_STOP_ATR = 0.5
@@ -178,8 +177,6 @@ def evaluate_advika_choice(
     if current.atr14 <= 0 or not math.isfinite(float(current.atr14)):
         return _reject(diagnostics, "invalid_atr")
 
-    pullback_low = float(data.low.iloc[-PULLBACK_LOOKBACK_BARS:].min())
-    pullback_high = float(data.high.iloc[-PULLBACK_LOOKBACK_BARS:].max())
     candle_range = max(float(current.high - current.low), 1e-12)
     long_candle_confirm = (
         current.close > current.open
